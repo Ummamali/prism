@@ -22,12 +22,16 @@ Usage:
 
 import argparse
 import json
+import time
 from pathlib import Path
+from typing import Optional
 
 from PIL import Image
 from tqdm import tqdm
 
+from checkpoint import zip_dataset_results
 from common import (
+    DATASET_PRESETS,
     ablate_image,
     cumulative_text,
     generate_blind_trajectory,
@@ -39,6 +43,11 @@ from common import (
     score_continuation,
     segment_steps,
 )
+
+# Checkpoint (zip current results) every N completed examples or every T
+# seconds within a shard, whichever comes first - see checkpoint.py.
+CHECKPOINT_EVERY_N_EXAMPLES = 10
+CHECKPOINT_EVERY_SECONDS = 600
 
 
 def scrub_prefix(blind_steps: list[str], s: int) -> str:
@@ -90,42 +99,37 @@ def run_example(loaded, image_full: Image.Image, image_ablated: Image.Image, que
     }
 
 
-def main() -> None:
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--config", default=None)
-    parser.add_argument("--limit", type=int, default=None, help="Only run the first N examples.")
-    parser.add_argument(
-        "--device",
-        default=None,
-        help="Device to load the model on, e.g. cuda:0 or cuda:1. Overrides config's model.device.",
-    )
-    parser.add_argument(
-        "--start", type=int, default=None, help="Start index (inclusive) of the example slice to run."
-    )
-    parser.add_argument(
-        "--end", type=int, default=None, help="End index (exclusive) of the example slice to run."
-    )
-    args = parser.parse_args()
-
-    cfg = load_config(args.config)
+def run_shard(
+    loaded,
+    cfg: dict,
+    dataset_key: str,
+    start: Optional[int] = None,
+    end: Optional[int] = None,
+    limit: Optional[int] = None,
+) -> None:
+    """Score one slice [start:end] of `dataset_key`'s cached sample with an
+    already-loaded model, checkpointing (zipping) results periodically so a
+    crashed/disconnected session doesn't lose completed work. Reusable from
+    both `main()` (single-shard CLI) and run_multi_shard.py (one process
+    looping over several benchmark shards without reloading the model).
+    """
     data_cfg = cfg["data"]
     out_cfg = cfg["output"]
     ablation_op = cfg["ablation"]["image_operator"]
 
     cache_path = resolve_path(data_cfg["cache_path"])
     examples = load_jsonl(cache_path)
-    examples = examples[args.start : args.end]
-    if args.limit:
-        examples = examples[: args.limit]
-
-    print(f"Loading model {cfg['model']['name']} ...")
-    loaded = load_model(cfg, device_override=args.device)
-    print(f"Model loaded on {loaded.device}.")
+    examples = examples[start:end]
+    if limit:
+        examples = examples[:limit]
 
     raw_dir = resolve_path(out_cfg["raw_dir"])
     raw_dir.mkdir(parents=True, exist_ok=True)
 
-    for ex in tqdm(examples, desc="Scoring examples"):
+    n_since_checkpoint = 0
+    last_checkpoint_time = time.monotonic()
+
+    for ex in tqdm(examples, desc=f"Scoring {dataset_key}"):
         out_path = raw_dir / f"{ex['pid']}.json"
         if out_path.exists():
             continue  # resume-friendly: skip already-scored examples
@@ -147,7 +151,52 @@ def main() -> None:
         with open(out_path, "w", encoding="utf-8") as f:
             json.dump(result, f, indent=2)
 
+        n_since_checkpoint += 1
+        elapsed = time.monotonic() - last_checkpoint_time
+        if n_since_checkpoint >= CHECKPOINT_EVERY_N_EXAMPLES or elapsed >= CHECKPOINT_EVERY_SECONDS:
+            zip_path = zip_dataset_results(cfg, dataset_key, label="partial")
+            if zip_path:
+                print(f"[checkpoint] {zip_path}")
+            n_since_checkpoint = 0
+            last_checkpoint_time = time.monotonic()
+
+    zip_path = zip_dataset_results(cfg, dataset_key, label="shard_done")
+    if zip_path:
+        print(f"[checkpoint] shard finished -> {zip_path}")
+
     print(f"Per-example results written to {raw_dir}")
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--config", default=None)
+    parser.add_argument(
+        "--dataset",
+        default=None,
+        choices=sorted(DATASET_PRESETS),
+        help="Benchmark preset to run. Overrides config's data.dataset.",
+    )
+    parser.add_argument("--limit", type=int, default=None, help="Only run the first N examples.")
+    parser.add_argument(
+        "--device",
+        default=None,
+        help="Device to load the model on, e.g. cuda:0 or cuda:1. Overrides config's model.device.",
+    )
+    parser.add_argument(
+        "--start", type=int, default=None, help="Start index (inclusive) of the example slice to run."
+    )
+    parser.add_argument(
+        "--end", type=int, default=None, help="End index (exclusive) of the example slice to run."
+    )
+    args = parser.parse_args()
+
+    cfg = load_config(args.config, dataset=args.dataset)
+
+    print(f"Loading model {cfg['model']['name']} ...")
+    loaded = load_model(cfg, device_override=args.device)
+    print(f"Model loaded on {loaded.device}.")
+
+    run_shard(loaded, cfg, cfg["data"]["dataset"], start=args.start, end=args.end, limit=args.limit)
 
 
 if __name__ == "__main__":

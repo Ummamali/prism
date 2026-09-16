@@ -11,11 +11,10 @@ model:
   temperature: 1.0         # only used if do_sample: true
 
 data:
-  dataset: "AI4Math/MathVista"
-  split: "testmini"        # MathVista's public split with answers
-  n_samples: 75             # ~50-100 pilot sample
+  dataset: "mathvista"     # one of: mathvista, hallusionbench, chartqa (see common.DATASET_PRESETS)
+  n_samples: 100            # 100-example pilot sample per benchmark
   seed: 42
-  cache_path: "experiment_1/data/mathvista_sample.jsonl"
+  cache_path: "experiment_1/data/{dataset}_sample.jsonl"   # {dataset} filled in from data.dataset
 
 # Image-ablation operator applied to build the "image removed" / blind-drop
 # condition. Proposal §5.4 lists five; we default to the simplest
@@ -40,9 +39,9 @@ segmentation:
   min_chars_per_step: 4     # drop degenerate near-empty "steps"
 
 output:
-  results_dir: "experiment_1/results"
-  raw_dir: "experiment_1/results/per_example"
-  aggregate_dir: "experiment_1/results/aggregate"
+  results_dir: "experiment_1/results_{dataset}"
+  raw_dir: "experiment_1/results_{dataset}/per_example"
+  aggregate_dir: "experiment_1/results_{dataset}/aggregate"
 
 analysis:
   bootstrap_iters: 2000

@@ -31,7 +31,7 @@ import json
 import numpy as np
 import pandas as pd
 
-from common import load_config, load_jsonl, resolve_path
+from common import DATASET_PRESETS, load_config, load_jsonl, resolve_path
 
 
 def compute_step_measures(step: dict, epsilon: float) -> dict:
@@ -73,9 +73,15 @@ def bootstrap_ci(values: np.ndarray, iters: int, seed: int, alpha: float = 0.05)
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", default=None)
+    parser.add_argument(
+        "--dataset",
+        default=None,
+        choices=sorted(DATASET_PRESETS),
+        help="Benchmark preset to aggregate. Overrides config's data.dataset.",
+    )
     args = parser.parse_args()
 
-    cfg = load_config(args.config)
+    cfg = load_config(args.config, dataset=args.dataset)
     out_cfg = cfg["output"]
     analysis_cfg = cfg["analysis"]
     epsilon = float(analysis_cfg["epsilon"])

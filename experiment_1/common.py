@@ -28,10 +28,66 @@ EXPERIMENT_DIR = Path(__file__).resolve().parent
 REPO_ROOT = EXPERIMENT_DIR.parent
 
 
-def load_config(config_path: Optional[str] = None) -> dict:
+# ---------------------------------------------------------------------------
+# Dataset presets: maps the `data.dataset` config key (or --dataset flag) to
+# the actual Hugging Face dataset id / split / field names for that
+# benchmark. Only data_loading.py reads the HF-specific fields; inference.py
+# and decomposition.py only ever see the common pid/question/answer/image_path
+# schema data_loading.py writes out, so scoring logic is untouched by which
+# preset is selected.
+# ---------------------------------------------------------------------------
+
+DATASET_PRESETS = {
+    "mathvista": {
+        "hf_id": "AI4Math/MathVista",
+        "split": "testmini",
+        "image_fields": ("decoded_image", "image"),
+        "question_field": "question",
+        "answer_field": "answer",
+        "pid_field": "pid",
+    },
+    "hallusionbench": {
+        "hf_id": "lmms-lab/HallusionBench",
+        "split": "image",  # visual-question split; excludes the text-only "non_image" split
+        "image_fields": ("image",),
+        "question_field": "question",
+        "answer_field": "gt_answer",
+        "pid_field": None,  # question_id is not unique per row; fall back to row index
+    },
+    "chartqa": {
+        "hf_id": "lmms-lab/ChartQA",
+        "split": "test",
+        "image_fields": ("image",),
+        "question_field": "question",
+        "answer_field": "answer",
+        "pid_field": None,  # no natural unique id; fall back to row index
+    },
+}
+
+
+def load_config(config_path: Optional[str] = None, dataset: Optional[str] = None) -> dict:
+    """Load config.yaml. `dataset` (or config's data.dataset) selects a
+    DATASET_PRESETS entry and fills in the {dataset}-templated cache/output
+    paths, so each benchmark gets its own data cache and results directory.
+    """
     path = Path(config_path) if config_path else EXPERIMENT_DIR / "config.yaml"
     with open(path, "r", encoding="utf-8") as f:
-        return yaml.safe_load(f)
+        cfg = yaml.safe_load(f)
+
+    if dataset:
+        cfg["data"]["dataset"] = dataset
+
+    dataset_key = cfg["data"]["dataset"]
+    if dataset_key not in DATASET_PRESETS:
+        raise ValueError(
+            f"Unknown data.dataset {dataset_key!r}; expected one of {sorted(DATASET_PRESETS)}"
+        )
+
+    cfg["data"]["cache_path"] = cfg["data"]["cache_path"].format(dataset=dataset_key)
+    for out_key in ("results_dir", "raw_dir", "aggregate_dir"):
+        cfg["output"][out_key] = cfg["output"][out_key].format(dataset=dataset_key)
+
+    return cfg
 
 
 def resolve_path(path_str: str) -> Path:

@@ -5,8 +5,8 @@ a partially-written per_example/.
 
 experiment_1/checkpoints/ resolves under the repo root, which on Kaggle is
 expected to live under /kaggle/working/ (persistent output storage) - see
-README/execution plan. If your repo lives elsewhere on Kaggle, point
---config at a config whose paths still resolve under /kaggle/working/.
+README.md. If your repo lives elsewhere on Kaggle, point --config at a
+config whose paths still resolve under /kaggle/working/.
 """
 
 from __future__ import annotations
@@ -16,7 +16,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
-from common import EXPERIMENT_DIR, load_config, resolve_path
+from .config import EXPERIMENT_DIR, load_config, resolve_path
 
 
 def checkpoint_dir() -> Path:

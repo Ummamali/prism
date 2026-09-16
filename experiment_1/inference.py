@@ -1,5 +1,6 @@
-"""Run the four-condition scoring harness (proposal §5.1, Table in §5.1)
-on the cached MathVista pilot sample.
+"""STAGE 2 of the pipeline: the four-condition scoring harness (proposal
+§5.1, Table in §5.1) on whichever benchmark's cached sample data_loading.py
+(STAGE 1) produced.
 
 For each example:
   1. Generate the real trajectory y = (y_1..y_S) with the image present.
@@ -14,10 +15,13 @@ For each example:
      capped at len(z) if the blind trajectory is shorter), matched by
      step index rather than token count -- see README for why.
 
-Saves one JSON file per example to experiment_1/results/per_example/.
+The actual generation/scoring math lives in lib/scoring.py; this file is
+the loop that drives it over a dataset and writes results to disk.
+
+Saves one JSON file per example to experiment_1/results_{dataset}/per_example/.
 
 Usage:
-    python experiment_1/inference.py [--config experiment_1/config.yaml] [--limit N]
+    python experiment_1/inference.py [--config experiment_1/config.yaml] [--dataset ...] [--limit N] [--device cuda:0] [--start N] [--end N]
 """
 
 import argparse
@@ -29,54 +33,67 @@ from typing import Optional
 from PIL import Image
 from tqdm import tqdm
 
-from checkpoint import zip_dataset_results
-from common import (
-    DATASET_PRESETS,
+from lib.checkpoint import zip_dataset_results
+from lib.config import DATASET_PRESETS, load_config, resolve_path
+from lib.io_utils import load_jsonl
+from lib.model import load_model
+from lib.scoring import (
     ablate_image,
     cumulative_text,
     generate_blind_trajectory,
     generate_trajectory,
-    load_config,
-    load_jsonl,
-    load_model,
-    resolve_path,
     score_continuation,
     segment_steps,
 )
 
 # Checkpoint (zip current results) every N completed examples or every T
-# seconds within a shard, whichever comes first - see checkpoint.py.
+# seconds within a shard, whichever comes first - see lib/checkpoint.py.
+# This is what makes a Kaggle session dying mid-benchmark non-catastrophic.
 CHECKPOINT_EVERY_N_EXAMPLES = 10
 CHECKPOINT_EVERY_SECONDS = 600
 
 
 def scrub_prefix(blind_steps: list[str], s: int) -> str:
-    """scrub(y_<s): first (s-1) steps of the blind trajectory, capped at
-    however many blind steps exist. s is 1-indexed.
+    """scrub(y_<s): first (s-1) steps of the BLIND trajectory (the one
+    generated with no image), standing in for "a prefix that carries no
+    real visual information". s is 1-indexed (step 1's scrub prefix is 0
+    steps, i.e. empty). Capped at however many blind steps actually exist,
+    in case the blind trajectory turned out shorter than s-1.
     """
     n_take = min(s - 1, len(blind_steps))
     return cumulative_text(blind_steps, n_take)
 
 
 def run_example(loaded, image_full: Image.Image, image_ablated: Image.Image, question: str, cfg: dict) -> dict:
+    """Run one example through the full C1-C4 harness: generate the real
+    and blind trajectories, then score every step of the real trajectory
+    under all four (image, prefix) conditions. Returns everything needed
+    to compute M_s/T_s/C_s/S_s/R_s later in decomposition.py (STAGE 3).
+    """
     seg_cfg = cfg["segmentation"]
 
+    # The "real" trajectory: the model's actual step-by-step answer, with
+    # the real image. This is what we're measuring image-dependence FOR.
     real_text = generate_trajectory(loaded, image_full, question, cfg)
     real_steps = segment_steps(real_text, seg_cfg["method"], seg_cfg["min_chars_per_step"])
 
+    # The "blind" trajectory: a second, independent answer generated with
+    # the image ablated from the start. Only used to build scrub(y_<s)
+    # below - not scored or reported on its own.
     blind_text = generate_blind_trajectory(loaded, image_ablated, question, cfg)
     blind_steps = segment_steps(blind_text, seg_cfg["method"], seg_cfg["min_chars_per_step"])
 
     step_records = []
     for s in range(1, len(real_steps) + 1):
-        target = real_steps[s - 1]
-        prefix_real = cumulative_text(real_steps, s - 1)
-        prefix_scrub = scrub_prefix(blind_steps, s)
+        target = real_steps[s - 1]  # the step we're scoring, y_s
+        prefix_real = cumulative_text(real_steps, s - 1)  # y_<s : what the model actually said before this step
+        prefix_scrub = scrub_prefix(blind_steps, s)  # scrub(y_<s) : a same-length prefix with no real visual info
 
-        ell_1 = score_continuation(loaded, image_full, question, prefix_real, target)
-        ell_2 = score_continuation(loaded, image_ablated, question, prefix_real, target)
-        ell_3 = score_continuation(loaded, image_full, question, prefix_scrub, target)
-        ell_4 = score_continuation(loaded, image_ablated, question, prefix_scrub, target)
+        # Same target step, four different (image, prefix) combinations:
+        ell_1 = score_continuation(loaded, image_full, question, prefix_real, target)  # C1: real image,  real prefix
+        ell_2 = score_continuation(loaded, image_ablated, question, prefix_real, target)  # C2: no image,   real prefix
+        ell_3 = score_continuation(loaded, image_full, question, prefix_scrub, target)  # C3: real image,  scrubbed prefix
+        ell_4 = score_continuation(loaded, image_ablated, question, prefix_scrub, target)  # C4: no image,   scrubbed prefix
 
         step_records.append(
             {

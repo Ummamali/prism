@@ -27,8 +27,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
-from checkpoint import zip_dataset_results
-from common import EXPERIMENT_DIR, load_config
+from lib.checkpoint import zip_dataset_results
+from lib.config import EXPERIMENT_DIR, load_config
 
 BENCHMARKS = ["mathvista", "hallusionbench", "chartqa"]
 SPLIT = 50  # each benchmark's n_samples examples split evenly across cuda:0 / cuda:1

@@ -10,8 +10,8 @@ Usage:
 
 import argparse
 
-from checkpoint import zip_all_configured_datasets
-from common import DATASET_PRESETS
+from lib.checkpoint import zip_all_configured_datasets
+from lib.config import DATASET_PRESETS
 
 
 def main() -> None:

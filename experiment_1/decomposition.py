@@ -1,26 +1,32 @@
-"""Compute the marginal/total dependence decomposition (proposal §5.1) from
-the per-example four-condition scores produced by inference.py, and fit the
+"""STAGE 3 of the pipeline: compute the marginal/total dependence
+decomposition (proposal §5.1) from the per-example four-condition scores
+inference.py (STAGE 2) wrote to results_{dataset}/per_example/, and fit the
 headline test (proposal §5.2): slopes beta_M, beta_T of M_s and T_s on
 normalised step index s_hat = s/S, and Delta-beta = beta_T - beta_M.
 
 Per-step quantities (all length-normalised log-likelihood differences, in
-nats/token, following the proposal exactly):
-    M_s = ell_1 - ell_2            controlled direct effect ("marginal")
-    T_s = ell_1 - ell_4            total visual dependence
-    C_s = T_s - M_s = ell_2 - ell_4   prefix-carried / indirect dependence
-    S_s = ell_3 - ell_4            visual sufficiency
-    R_s = C_s / max(T_s, epsilon)  redundancy ratio, clipped to [0, 1]
+nats/token, following the proposal exactly). In plain terms: each is "how
+much more likely did the model think this step was, under condition A vs.
+condition B" - a positive number means condition A made the step more
+predictable to the model.
+    M_s = ell_1 - ell_2            controlled direct effect ("marginal") - image helps, holding the real prefix fixed
+    T_s = ell_1 - ell_4            total visual dependence - image helps, even with a scrubbed prefix
+    C_s = T_s - M_s = ell_2 - ell_4   prefix-carried / indirect dependence - how much of "help" flows through the prefix, not the image itself
+    S_s = ell_3 - ell_4            visual sufficiency - does the image alone (scrubbed prefix) still help?
+    R_s = C_s / max(T_s, epsilon)  redundancy ratio, clipped to [0, 1] - fraction of total dependence that's "really" prefix, not image
 
-Aggregation: per-example (per-trajectory) OLS slope of M_s (resp. T_s) on
+Aggregation: per-example (per-trajectory) OLS ("ordinary least squares" -
+the standard straight-line-of-best-fit method) slope of M_s (resp. T_s) on
 s_hat, then the mean slope across examples is reported as beta_M (resp.
-beta_T), with a percentile bootstrap CI over examples. This is a simple
+beta_T), with a percentile bootstrap CI ("confidence interval" - the range
+the true value plausibly falls in) over examples. This is a simple
 Fama-MacBeth-style estimator rather than the proposal's full mixed-effects
 model with random intercepts by item/model (§5.2) -- reasonable for a
-~75-example single-model pilot; flagged here rather than silently
+~100-example single-model pilot; flagged here rather than silently
 presented as the full analysis.
 
 Usage:
-    python experiment_1/decomposition.py [--config experiment_1/config.yaml]
+    python experiment_1/decomposition.py [--config experiment_1/config.yaml] [--dataset ...]
 """
 
 from __future__ import annotations
@@ -31,10 +37,13 @@ import json
 import numpy as np
 import pandas as pd
 
-from common import DATASET_PRESETS, load_config, load_jsonl, resolve_path
+from lib.config import DATASET_PRESETS, load_config, resolve_path
 
 
 def compute_step_measures(step: dict, epsilon: float) -> dict:
+    """Turn one step's four raw log-likelihoods (ell_1..ell_4) into the
+    five M/T/C/S/R measures defined in this file's docstring.
+    """
     ell_1, ell_2, ell_3, ell_4 = step["ell_1"], step["ell_2"], step["ell_3"], step["ell_4"]
     M = ell_1 - ell_2
     T = ell_1 - ell_4
@@ -45,6 +54,11 @@ def compute_step_measures(step: dict, epsilon: float) -> dict:
 
 
 def ols_slope(x: np.ndarray, y: np.ndarray) -> float | None:
+    """Fit a straight line y = slope*x + intercept and return just the
+    slope - i.e. "as x goes from 0 to 1, how much does y change on
+    average". Returns None when there isn't enough variation in x to fit a
+    line at all (fewer than 2 points, or every x value identical).
+    """
     if len(x) < 2 or np.allclose(x, x[0]):
         return None
     slope, _intercept = np.polyfit(x, y, 1)
@@ -52,6 +66,14 @@ def ols_slope(x: np.ndarray, y: np.ndarray) -> float | None:
 
 
 def bootstrap_ci(values: np.ndarray, iters: int, seed: int, alpha: float = 0.05):
+    """Percentile bootstrap: repeatedly resample `values` WITH replacement
+    (drawing a new random sample of the same size, some values picked more
+    than once) and take the mean each time, to build up a distribution of
+    "what the mean could plausibly have been". The middle 95% of that
+    distribution (by default, alpha=0.05) is reported as a confidence
+    interval - a cheap way to estimate uncertainty without assuming the
+    underlying data is normally distributed.
+    """
     rng = np.random.default_rng(seed)
     values = values[~np.isnan(values)]
     if len(values) == 0:
@@ -94,8 +116,8 @@ def main() -> None:
     if not example_files:
         raise SystemExit(f"No per-example results found in {raw_dir}. Run inference.py first.")
 
-    all_step_rows = []
-    per_example_slopes = []
+    all_step_rows = []  # one row per (example, step) - the finest-grained view
+    per_example_slopes = []  # one row per example - each example's own beta_M/beta_T
 
     for path in example_files:
         with open(path, "r", encoding="utf-8") as f:
@@ -177,8 +199,16 @@ def main() -> None:
 
 def interpret(beta_M_stats: dict, beta_T_stats: dict, delta_beta_stats: dict) -> str:
     """Proposal §5.2's three pre-registered outcome buckets, applied
-    mechanically to the point estimates. Read the bootstrap CIs before
-    trusting this label -- it does not itself test significance.
+    mechanically to the point estimates:
+      - both slopes negative and similar in size -> the widely-reported
+        "reasoning ignores the image over time" effect looks real.
+      - beta_M negative but beta_T close to zero -> that effect is mostly
+        an artifact of the prefix carrying visual info indirectly, not the
+        image itself being ignored.
+      - anything else -> no clean story; look at the per-example CSVs.
+    This is a MECHANICAL label from point estimates only. Read the
+    bootstrap CIs (do they overlap zero?) before trusting it -- it does
+    not itself test statistical significance.
     """
     bm, bt, db = beta_M_stats["mean"], beta_T_stats["mean"], delta_beta_stats["mean"]
     if np.isnan(bm) or np.isnan(bt):

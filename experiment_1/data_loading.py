@@ -1,5 +1,12 @@
-"""Pull a small pilot sample from the configured benchmark (data.dataset in
-config.yaml, or --dataset) and cache it locally.
+"""STAGE 1 of the pipeline: pull a small pilot sample from the configured
+benchmark (data.dataset in config.yaml, or --dataset) and cache it locally
+as one .jsonl file (one row per example) plus a folder of saved images.
+
+Every benchmark has a different Hugging Face layout (different dataset id,
+split name, and column names for the image/question/answer) - see
+lib/config.py's DATASET_PRESETS for that mapping. This script's only job is
+to normalize whichever benchmark you picked into one common on-disk format,
+so inference.py (STAGE 2) never has to know which benchmark it's scoring.
 
 Usage:
     python experiment_1/data_loading.py [--config experiment_1/config.yaml] [--dataset mathvista|hallusionbench|chartqa]
@@ -14,13 +21,18 @@ import argparse
 import random
 from pathlib import Path
 
-from common import DATASET_PRESETS, EXPERIMENT_DIR, load_config, resolve_path, save_jsonl
+from lib.config import DATASET_PRESETS, EXPERIMENT_DIR, load_config, resolve_path
+from lib.io_utils import save_jsonl
 
 
 def resolve_image_field(example: dict, image_fields: tuple[str, ...]):
+    """Different benchmarks/dataset versions call the image column
+    different things - try each candidate name in `image_fields` (from
+    DATASET_PRESETS) until one actually holds a PIL image.
+    """
     for field in image_fields:
         val = example.get(field)
-        if val is not None and hasattr(val, "save"):
+        if val is not None and hasattr(val, "save"):  # PIL images have a .save() method
             return val
     raise KeyError(
         f"Could not find a PIL image field on example (tried {image_fields}); "
@@ -44,11 +56,14 @@ def main() -> None:
     dataset_key = data_cfg["dataset"]
     preset = DATASET_PRESETS[dataset_key]
 
-    from datasets import load_dataset
+    from datasets import load_dataset  # imported lazily: only needed here, and it's a slow import
 
     print(f"Loading {preset['hf_id']} split={preset['split']} (preset={dataset_key}) ...")
     ds = load_dataset(preset["hf_id"], split=preset["split"])
 
+    # A fixed seed -> the same n_samples rows every time you re-run this,
+    # so re-running data_loading.py doesn't quietly change which examples
+    # you're scoring.
     rng = random.Random(data_cfg["seed"])
     n = min(data_cfg["n_samples"], len(ds))
     indices = rng.sample(range(len(ds)), n)

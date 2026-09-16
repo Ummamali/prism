@@ -27,13 +27,13 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
-from lib.checkpoint import zip_dataset_results
-from lib.config import EXPERIMENT_DIR, load_config
+from lib.checkpoint import checkpoint_dir, zip_dataset_results
+from lib.config import load_config
 
 BENCHMARKS = ["mathvista", "hallusionbench", "chartqa"]
 SPLIT = 50  # each benchmark's n_samples examples split evenly across cuda:0 / cuda:1
 LOG_DIR = Path("/kaggle/working")
-STATUS_PATH = EXPERIMENT_DIR / "checkpoints" / "run_status.json"
+STATUS_PATH = checkpoint_dir() / "run_status.json"
 
 
 def write_status(**fields) -> None:

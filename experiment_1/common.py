@@ -143,6 +143,17 @@ def segment_steps(text: str, method: str = "sentence", min_chars: int = 4) -> li
 # Chat formatting
 # ---------------------------------------------------------------------------
 
+# Used for both trajectory generation (generate_trajectory /
+# generate_blind_trajectory) and teacher-forced scoring (score_continuation)
+# so that ell_1..ell_4 are always computed under the exact prompt that
+# produced the trajectory being scored -- a mismatch here would bias the
+# log-likelihoods against whatever prompt wording actually generated the
+# step under evaluation.
+STEP_BY_STEP_INSTRUCTION = (
+    "Solve this step by step, showing your reasoning for each step, "
+    "then give your final answer."
+)
+
 
 def build_messages(question: str, assistant_text: Optional[str] = None) -> list[dict]:
     messages = [
@@ -152,9 +163,7 @@ def build_messages(question: str, assistant_text: Optional[str] = None) -> list[
                 {"type": "image"},
                 {
                     "type": "text",
-                    "text": (
-                        f"{question}\nThink step by step, then give the final answer."
-                    ),
+                    "text": f"{question}\n{STEP_BY_STEP_INSTRUCTION}",
                 },
             ],
         }

@@ -94,6 +94,17 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", default=None)
     parser.add_argument("--limit", type=int, default=None, help="Only run the first N examples.")
+    parser.add_argument(
+        "--device",
+        default=None,
+        help="Device to load the model on, e.g. cuda:0 or cuda:1. Overrides config's model.device.",
+    )
+    parser.add_argument(
+        "--start", type=int, default=None, help="Start index (inclusive) of the example slice to run."
+    )
+    parser.add_argument(
+        "--end", type=int, default=None, help="End index (exclusive) of the example slice to run."
+    )
     args = parser.parse_args()
 
     cfg = load_config(args.config)
@@ -103,11 +114,12 @@ def main() -> None:
 
     cache_path = resolve_path(data_cfg["cache_path"])
     examples = load_jsonl(cache_path)
+    examples = examples[args.start : args.end]
     if args.limit:
         examples = examples[: args.limit]
 
     print(f"Loading model {cfg['model']['name']} ...")
-    loaded = load_model(cfg)
+    loaded = load_model(cfg, device_override=args.device)
     print(f"Model loaded on {loaded.device}.")
 
     raw_dir = resolve_path(out_cfg["raw_dir"])

@@ -52,14 +52,14 @@ class LoadedModel:
     device: str
 
 
-def load_model(cfg: dict) -> LoadedModel:
+def load_model(cfg: dict, device_override: Optional[str] = None) -> LoadedModel:
     from transformers import AutoProcessor, Qwen2VLForConditionalGeneration
 
     model_cfg = cfg["model"]
     model_name = model_cfg["name"]
     processor_name = model_cfg.get("processor_name") or model_name
 
-    device = model_cfg.get("device", "auto")
+    device = device_override or model_cfg.get("device", "auto")
     if device == "auto":
         device = "cuda" if torch.cuda.is_available() else "cpu"
 

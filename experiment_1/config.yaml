@@ -1,0 +1,50 @@
+# Experiment 1 config — swap `model.name` to scale from a 2B pilot up to
+# larger checkpoints later. Every script in experiment_1/ reads this file.
+
+model:
+  name: "Qwen/Qwen2-VL-2B-Instruct"
+  processor_name: null   # defaults to model.name if null
+  dtype: "auto"           # let transformers pick the checkpoint's native dtype
+  device: "auto"           # "auto" -> cuda if available else cpu
+  max_new_tokens: 256      # cap on generated CoT length per trajectory
+  do_sample: false         # greedy decoding for reproducibility
+  temperature: 1.0         # only used if do_sample: true
+
+data:
+  dataset: "AI4Math/MathVista"
+  split: "testmini"        # MathVista's public split with answers
+  n_samples: 75             # ~50-100 pilot sample
+  seed: 42
+  cache_path: "experiment_1/data/mathvista_sample.jsonl"
+
+# Image-ablation operator applied to build the "image removed" / blind-drop
+# condition. Proposal §5.4 lists five; we default to the simplest
+# (mean-pixel fill) for the pilot. Region-blur (the proposal's headline
+# operator) needs a question-relevant-region localizer, out of scope here.
+ablation:
+  image_operator: "mean_pixel_fill"   # one of: mean_pixel_fill, gaussian_noise
+
+# Scrub operator used to build scrub(y_<s), the "prefix carries no visual
+# content" condition needed for T_s (condition C3/C4 in proposal Table §5.1).
+# blind_regeneration: regenerate a same-model trajectory from the question
+# alone (image ablated) and use its step-s-1 prefix in place of y_<s,
+# matched by step index. Proposal calls this "cleanest causally".
+scrub:
+  operator: "blind_regeneration"
+
+# Sentence-split segmentation of free-text CoT into steps y_1..y_S. The
+# proposal defines steps abstractly and does not specify a segmentation
+# rule for free text.
+segmentation:
+  method: "sentence"
+  min_chars_per_step: 4     # drop degenerate near-empty "steps"
+
+output:
+  results_dir: "experiment_1/results"
+  raw_dir: "experiment_1/results/per_example"
+  aggregate_dir: "experiment_1/results/aggregate"
+
+analysis:
+  bootstrap_iters: 2000
+  bootstrap_seed: 42
+  epsilon: 1.0e-6            # epsilon in R_s = C_s / max(T_s, epsilon)

@@ -1,0 +1,142 @@
+"""Run the four-condition scoring harness (proposal §5.1, Table in §5.1)
+on the cached MathVista pilot sample.
+
+For each example:
+  1. Generate the real trajectory y = (y_1..y_S) with the image present.
+  2. Generate a blind trajectory z = (z_1..z_Z) with the image ablated
+     from the start (the scrub source, §5.3 blind regeneration).
+  3. For each step s, teacher-force-score y_s under four conditions:
+       C1: image=I,  prefix=y_<s          -> ell_1
+       C2: image=Ĩ,  prefix=y_<s          -> ell_2
+       C3: image=I,  prefix=scrub(y_<s)   -> ell_3
+       C4: image=Ĩ,  prefix=scrub(y_<s)   -> ell_4
+     where scrub(y_<s) = z_<s (first s-1 steps of the blind trajectory,
+     capped at len(z) if the blind trajectory is shorter), matched by
+     step index rather than token count -- see README for why.
+
+Saves one JSON file per example to experiment_1/results/per_example/.
+
+Usage:
+    python experiment_1/inference.py [--config experiment_1/config.yaml] [--limit N]
+"""
+
+import argparse
+import json
+from pathlib import Path
+
+from PIL import Image
+from tqdm import tqdm
+
+from common import (
+    ablate_image,
+    cumulative_text,
+    generate_blind_trajectory,
+    generate_trajectory,
+    load_config,
+    load_jsonl,
+    load_model,
+    resolve_path,
+    score_continuation,
+    segment_steps,
+)
+
+
+def scrub_prefix(blind_steps: list[str], s: int) -> str:
+    """scrub(y_<s): first (s-1) steps of the blind trajectory, capped at
+    however many blind steps exist. s is 1-indexed.
+    """
+    n_take = min(s - 1, len(blind_steps))
+    return cumulative_text(blind_steps, n_take)
+
+
+def run_example(loaded, image_full: Image.Image, image_ablated: Image.Image, question: str, cfg: dict) -> dict:
+    seg_cfg = cfg["segmentation"]
+
+    real_text = generate_trajectory(loaded, image_full, question, cfg)
+    real_steps = segment_steps(real_text, seg_cfg["method"], seg_cfg["min_chars_per_step"])
+
+    blind_text = generate_blind_trajectory(loaded, image_ablated, question, cfg)
+    blind_steps = segment_steps(blind_text, seg_cfg["method"], seg_cfg["min_chars_per_step"])
+
+    step_records = []
+    for s in range(1, len(real_steps) + 1):
+        target = real_steps[s - 1]
+        prefix_real = cumulative_text(real_steps, s - 1)
+        prefix_scrub = scrub_prefix(blind_steps, s)
+
+        ell_1 = score_continuation(loaded, image_full, question, prefix_real, target)
+        ell_2 = score_continuation(loaded, image_ablated, question, prefix_real, target)
+        ell_3 = score_continuation(loaded, image_full, question, prefix_scrub, target)
+        ell_4 = score_continuation(loaded, image_ablated, question, prefix_scrub, target)
+
+        step_records.append(
+            {
+                "step_index": s,
+                "step_text": target,
+                "ell_1": ell_1,
+                "ell_2": ell_2,
+                "ell_3": ell_3,
+                "ell_4": ell_4,
+            }
+        )
+
+    return {
+        "real_trajectory": real_text,
+        "real_steps": real_steps,
+        "blind_trajectory": blind_text,
+        "blind_steps": blind_steps,
+        "n_steps": len(real_steps),
+        "steps": step_records,
+    }
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--config", default=None)
+    parser.add_argument("--limit", type=int, default=None, help="Only run the first N examples.")
+    args = parser.parse_args()
+
+    cfg = load_config(args.config)
+    data_cfg = cfg["data"]
+    out_cfg = cfg["output"]
+    ablation_op = cfg["ablation"]["image_operator"]
+
+    cache_path = resolve_path(data_cfg["cache_path"])
+    examples = load_jsonl(cache_path)
+    if args.limit:
+        examples = examples[: args.limit]
+
+    print(f"Loading model {cfg['model']['name']} ...")
+    loaded = load_model(cfg)
+    print(f"Model loaded on {loaded.device}.")
+
+    raw_dir = resolve_path(out_cfg["raw_dir"])
+    raw_dir.mkdir(parents=True, exist_ok=True)
+
+    for ex in tqdm(examples, desc="Scoring examples"):
+        out_path = raw_dir / f"{ex['pid']}.json"
+        if out_path.exists():
+            continue  # resume-friendly: skip already-scored examples
+
+        image_path = resolve_path(ex["image_path"])
+        image_full = Image.open(image_path).convert("RGB")
+        image_ablated = ablate_image(image_full, ablation_op)
+
+        try:
+            result = run_example(loaded, image_full, image_ablated, ex["question"], cfg)
+        except Exception as e:  # noqa: BLE001 - pilot harness, log and continue
+            print(f"[WARN] example {ex['pid']} failed: {e}")
+            continue
+
+        result["pid"] = ex["pid"]
+        result["question"] = ex["question"]
+        result["answer"] = ex["answer"]
+
+        with open(out_path, "w", encoding="utf-8") as f:
+            json.dump(result, f, indent=2)
+
+    print(f"Per-example results written to {raw_dir}")
+
+
+if __name__ == "__main__":
+    main()

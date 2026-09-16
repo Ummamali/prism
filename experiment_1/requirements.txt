@@ -1,0 +1,6 @@
+# Install with: pip install -r requirements.txt -r experiment_1/requirements.txt
+datasets>=2.19
+pyyaml>=6.0
+pandas>=2.0
+numpy>=1.26
+tqdm>=4.66

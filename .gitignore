@@ -1,3 +1,12 @@
 __pycache__/
 *.pyc
 .claude/
+
+# Experiment 1 generated artifacts (re-creatable via data_loading.py /
+# inference.py / decomposition.py)
+experiment_1/data/*.jsonl
+experiment_1/data/images/
+experiment_1/results/per_example/*.json
+experiment_1/results/aggregate/*.csv
+experiment_1/results/aggregate/*.json
+!experiment_1/**/.gitkeep

@@ -4,7 +4,7 @@
 model:
   name: "Qwen/Qwen2-VL-2B-Instruct"
   processor_name: null   # defaults to model.name if null
-  dtype: "auto"           # let transformers pick the checkpoint's native dtype
+  dtype: "float16"         # force fp16 (T4 has no bf16 tensor-core support; "auto" loads bf16)
   device: "auto"           # "auto" -> cuda if available else cpu
   max_new_tokens: 256      # cap on generated CoT length per trajectory
   do_sample: false         # greedy decoding for reproducibility

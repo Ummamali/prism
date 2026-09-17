@@ -16,6 +16,7 @@ fully-parallel-per-benchmark schedule with a clean checkpoint between each.
 
 Usage:
     python experiment_1/run_all_benchmarks.py [--config experiment_1/config.yaml]
+    python experiment_1/run_all_benchmarks.py --benchmarks chartqa   # just one (or a subset)
 """
 
 import argparse
@@ -28,7 +29,7 @@ from pathlib import Path
 from typing import Optional
 
 from lib.checkpoint import checkpoint_dir, zip_dataset_results
-from lib.config import load_config
+from lib.config import DATASET_PRESETS, load_config
 
 BENCHMARKS = ["mathvista", "hallusionbench", "chartqa"]
 SPLIT = 50  # each benchmark's n_samples examples split evenly across cuda:0 / cuda:1
@@ -96,9 +97,16 @@ def run_benchmark(benchmark: str, config_path: Optional[str]) -> None:
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", default=None)
+    parser.add_argument(
+        "--benchmarks",
+        nargs="+",
+        default=BENCHMARKS,
+        choices=sorted(DATASET_PRESETS),
+        help="Which benchmark(s) to run, e.g. --benchmarks chartqa. Default: all three.",
+    )
     args = parser.parse_args()
 
-    for benchmark in BENCHMARKS:
+    for benchmark in args.benchmarks:
         run_benchmark(benchmark, args.config)
 
     write_status(benchmark=None, status="all_done")

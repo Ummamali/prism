@@ -87,25 +87,25 @@ def plot_per_step_trends(data: dict, datasets: list[str], out_dir: Path) -> None
         ax.axhline(0, color=ZERO_LINE_COLOR, linewidth=1, zorder=1)
 
         ax.plot(m_bins["s_hat_center"], m_bins["mean"], color="#0b0b0b", linewidth=2,
-                marker="o", markersize=5, label="M_s (marginal / controlled-direct)")
+                marker="o", markersize=5, label=r"$M_s$ (marginal / controlled-direct)")
         ax.fill_between(m_bins["s_hat_center"], m_bins["mean"] - m_bins["se"],
                          m_bins["mean"] + m_bins["se"], color="#0b0b0b", alpha=0.15)
 
         ax.plot(t_bins["s_hat_center"], t_bins["mean"], color=COLORS[dataset], linewidth=2,
-                marker="s", markersize=5, label="T_s (total visual dependence)")
+                marker="s", markersize=5, label=r"$T_s$ (total visual dependence)")
         ax.fill_between(t_bins["s_hat_center"], t_bins["mean"] - t_bins["se"],
                          t_bins["mean"] + t_bins["se"], color=COLORS[dataset], alpha=0.2)
 
         ax.set_title(dataset)
-        ax.set_xlabel("step position (0 = start, 1 = end)")
+        ax.set_xlabel(r"step position (0 = start, 1 = end)")
         ax.grid(True, color=GRID_COLOR, linewidth=0.8)
         ax.set_axisbelow(True)
         for spine in ("top", "right"):
             ax.spines[spine].set_visible(False)
         ax.legend(loc="best", frameon=False)
 
-    axes[0].set_ylabel("mean nats/token (+/- 1 SE)")
-    fig.suptitle("M_s vs T_s over trajectory position, per benchmark")
+    axes[0].set_ylabel("mean nats/token (± 1 SE)")
+    fig.suptitle(r"$M_s$ vs $T_s$ over trajectory position, per benchmark")
     fig.tight_layout()
     fig.savefig(out_dir / "per_step_trends.png", dpi=150)
     plt.close(fig)
@@ -113,7 +113,11 @@ def plot_per_step_trends(data: dict, datasets: list[str], out_dir: Path) -> None
 
 def plot_beta_ci(data: dict, datasets: list[str], out_dir: Path) -> None:
     coeffs = ["beta_M", "beta_T", "delta_beta"]
-    coeff_labels = ["beta_M\n(marginal slope)", "beta_T\n(total slope)", "delta_beta\n(beta_T - beta_M)"]
+    coeff_labels = [
+        r"$\beta_M$" + "\n(marginal slope)",
+        r"$\beta_T$" + "\n(total slope)",
+        r"$\Delta\beta$" + "\n" + r"($\beta_T - \beta_M$)",
+    ]
 
     fig, ax = plt.subplots(figsize=(8, 5))
     ax.axhline(0, color=ZERO_LINE_COLOR, linewidth=1, zorder=1)
@@ -163,15 +167,15 @@ def plot_beta_scatter(data: dict, datasets: list[str], out_dir: Path) -> None:
         pad = 0.05 * (hi - lo) if hi > lo else 1.0
         line_range = [lo - pad, hi + pad]
         ax.plot(line_range, line_range, color=ZERO_LINE_COLOR, linewidth=1,
-                 linestyle="--", zorder=1, label="y = x")
+                 linestyle="--", zorder=1, label=r"$y = x$")
         ax.set_xlim(line_range)
         ax.set_ylim(line_range)
 
     ax.axhline(0, color=GRID_COLOR, linewidth=0.8, zorder=0)
     ax.axvline(0, color=GRID_COLOR, linewidth=0.8, zorder=0)
-    ax.set_xlabel("beta_M (marginal slope, per example)")
-    ax.set_ylabel("beta_T (total slope, per example)")
-    ax.set_title("Per-example beta_M vs beta_T")
+    ax.set_xlabel(r"$\beta_M$ (marginal slope, per example)")
+    ax.set_ylabel(r"$\beta_T$ (total slope, per example)")
+    ax.set_title(r"Per-example $\beta_M$ vs $\beta_T$")
     ax.set_aspect("equal", adjustable="box")
     for spine in ("top", "right"):
         ax.spines[spine].set_visible(False)
@@ -193,9 +197,9 @@ def plot_redundancy_trend(data: dict, datasets: list[str], out_dir: Path) -> Non
         ax.fill_between(r_bins["s_hat_center"], r_bins["mean"] - r_bins["se"],
                          r_bins["mean"] + r_bins["se"], color=COLORS[dataset], alpha=0.2)
 
-    ax.set_xlabel("step position (0 = start, 1 = end)")
-    ax.set_ylabel("mean R_s, redundancy ratio (0-1) (+/- 1 SE)")
-    ax.set_title("Redundancy ratio over trajectory position")
+    ax.set_xlabel(r"step position (0 = start, 1 = end)")
+    ax.set_ylabel("mean $R_s$, redundancy ratio (0–1) (± 1 SE)")
+    ax.set_title(r"Redundancy ratio over trajectory position")
     ax.set_ylim(0, 1)
     ax.grid(True, color=GRID_COLOR, linewidth=0.8)
     ax.set_axisbelow(True)

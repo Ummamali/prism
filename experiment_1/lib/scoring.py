@@ -11,7 +11,6 @@ plain-language explanation of what ell_1..ell_4 and the four conditions
 from __future__ import annotations
 
 import re
-from typing import Optional
 
 import torch
 from PIL import Image
@@ -104,12 +103,13 @@ STEP_BY_STEP_INSTRUCTION = (
 )
 
 
-def build_messages(question: str, assistant_text: Optional[str] = None) -> list[dict]:
-    """Build a chat-template message list: one user turn (image + question),
-    plus optionally one assistant turn (used to "prime" the model with a
-    prefix of an answer when teacher-forced scoring a continuation of it).
+def build_messages(question: str) -> list[dict]:
+    """Build a chat-template message list holding just the one user turn
+    (image + question). Deliberately never includes an assistant turn - see
+    build_prompt_prefix()'s docstring for why priming with a partial answer
+    is done by raw string concatenation instead of a second chat message.
     """
-    messages = [
+    return [
         {
             "role": "user",
             "content": [
@@ -121,14 +121,60 @@ def build_messages(question: str, assistant_text: Optional[str] = None) -> list[
             ],
         }
     ]
-    if assistant_text is not None:
-        messages.append({"role": "assistant", "content": assistant_text})
-    return messages
+
+
+def build_prompt_prefix(processor, question: str) -> str:
+    """Render the chat template through the end of the user turn plus the
+    assistant-turn preamble (add_generation_prompt=True) - i.e. exactly the
+    text real generation is conditioned on before the model writes its
+    first token. Any continuation (a real or scrub prefix, or a scored
+    target step) is appended to this as a raw string, never as a second
+    chat message.
+
+    This matters specifically for "Thinking"-style models (e.g.
+    Qwen3-VL-*-Thinking): their chat template renders
+    add_generation_prompt=True as "...<|im_start|>assistant\\n<think>\\n",
+    so generation always starts inside an open <think> block. If a partial
+    trajectory were instead passed back in as a second {"role": "assistant",
+    "content": ...} message (as this pipeline used to do), that template
+    re-parses the content for "<think>...</think>" and re-wraps it with a
+    *synthetic closing </think>* even when the real generation never closed
+    the block at that point (because it's a mid-reasoning prefix, not a
+    finished turn) - silently feeding the model a different context than
+    the one that actually produced the text being scored. Building the
+    prompt as one flat string sidesteps that template logic entirely, so
+    teacher-forced scoring always sees the exact token stream real
+    generation would have produced up to that point.
+    """
+    messages = build_messages(question)
+    return processor.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
 
 
 # ---------------------------------------------------------------------------
 # Generation: asking the model to actually produce a reasoning trajectory.
 # ---------------------------------------------------------------------------
+
+
+def extract_trajectory_text(raw_text: str) -> str:
+    """Turn a model's raw generated text into the flat trajectory text used
+    for step segmentation and scoring.
+
+    A "Thinking"-style model's real output is "{reasoning}</think>\\n\\n
+    {final answer}" - generation starts already inside an open <think>
+    block because add_generation_prompt renders "...<think>\\n" (see
+    build_prompt_prefix()). Per this pilot's design decision, the
+    trajectory being measured for visual grounding is the *whole* thing -
+    reasoning and final answer concatenated - not just one half; this
+    drops only the structural "</think>" marker itself, joining the two
+    parts with a space so segment_steps() sees one continuous text.
+
+    Non-thinking models (e.g. Qwen2-VL) never emit "</think>", so this is a
+    no-op for them - raw_text is returned unchanged (stripped).
+    """
+    if "</think>" in raw_text:
+        reasoning, _, answer = raw_text.partition("</think>")
+        return (reasoning.strip() + " " + answer.strip()).strip()
+    return raw_text.strip()
 
 
 def generate_trajectory(loaded: LoadedModel, image: Image.Image, question: str, cfg: dict) -> str:
@@ -141,8 +187,7 @@ def generate_trajectory(loaded: LoadedModel, image: Image.Image, question: str, 
     model, processor, device = loaded.model, loaded.processor, loaded.device
     model_cfg = cfg["model"]
 
-    messages = build_messages(question)
-    text = processor.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
+    text = build_prompt_prefix(processor, question)
     inputs = processor(text=[text], images=[image], return_tensors="pt", padding=True).to(device)
 
     gen_kwargs = dict(max_new_tokens=model_cfg.get("max_new_tokens", 256))
@@ -157,7 +202,7 @@ def generate_trajectory(loaded: LoadedModel, image: Image.Image, question: str, 
     prompt_len = inputs["input_ids"].shape[1]
     new_ids = output_ids[:, prompt_len:]  # drop the prompt tokens, keep only what the model generated
     text_out = processor.batch_decode(new_ids, skip_special_tokens=True)[0]
-    return text_out.strip()
+    return extract_trajectory_text(text_out)
 
 
 def generate_blind_trajectory(
@@ -216,18 +261,17 @@ def score_continuation(
     tokenizers can re-split characters differently right at the seam where
     prefix meets target (a BPE/subword-tokenizer quirk) - the standard trick
     used by continuation-scoring harnesses.
+
+    prefix_text/target_text are appended as raw strings onto
+    build_prompt_prefix()'s output, never as a second chat message - see
+    that function's docstring for why (Thinking-model chat templates would
+    otherwise re-parse and corrupt a mid-reasoning prefix).
     """
     model, processor, device = loaded.model, loaded.processor, loaded.device
 
-    messages_prefix = build_messages(question, assistant_text=prefix_text)
-    messages_full = build_messages(question, assistant_text=prefix_text + target_text)
-
-    text_prefix = processor.apply_chat_template(
-        messages_prefix, tokenize=False, add_generation_prompt=False
-    )
-    text_full = processor.apply_chat_template(
-        messages_full, tokenize=False, add_generation_prompt=False
-    )
+    prompt_text = build_prompt_prefix(processor, question)
+    text_prefix = prompt_text + prefix_text
+    text_full = prompt_text + prefix_text + target_text
 
     inputs_prefix = processor(text=[text_prefix], images=[image], return_tensors="pt", padding=True)
     inputs_full = processor(text=[text_full], images=[image], return_tensors="pt", padding=True).to(

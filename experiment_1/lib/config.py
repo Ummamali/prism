@@ -60,6 +60,24 @@ DATASET_PRESETS = {
         "answer_field": "answer",
         "pid_field": None,  # no natural unique id; fall back to row index
     },
+    "mmmu": {
+        "hf_id": "lmms-lab/MMMU",
+        "split": "validation",  # "test" has no public ground-truth answers; "dev" is tiny (150)
+        # MMMU questions carry up to 7 images (image_1..image_7); most are
+        # single-image (image_1) - try each in order, first non-empty wins.
+        "image_fields": tuple(f"image_{i}" for i in range(1, 8)),
+        "question_field": "question",
+        "answer_field": "answer",
+        "pid_field": "id",
+    },
+    "realworldqa": {
+        "hf_id": "lmms-lab/RealWorldQA",
+        "split": "test",
+        "image_fields": ("image",),
+        "question_field": "question",
+        "answer_field": "answer",
+        "pid_field": None,  # no natural unique id; fall back to row index
+    },
 }
 
 

@@ -1,7 +1,8 @@
-"""Run mathvista, hallusionbench, and chartqa one benchmark at a time, each
-split 50/50 across both GPUs in parallel via inference.py subprocesses.
-Once both GPU halves of a benchmark finish, checkpoints (zips) that
-benchmark's combined results before moving to the next benchmark.
+"""Run all configured benchmarks (mathvista, hallusionbench, chartqa, mmmu,
+realworldqa) one at a time, each split 50/50 across both GPUs in parallel
+via inference.py subprocesses. Once both GPU halves of a benchmark finish,
+checkpoints (zips) that benchmark's combined results before moving to the
+next benchmark.
 
 Meant to be launched once as a single background process (see notebook
 cell) and left to run unattended. Keeps experiment_1/checkpoints/run_status.json
@@ -31,8 +32,7 @@ from typing import Optional
 from lib.checkpoint import checkpoint_dir, zip_dataset_results
 from lib.config import DATASET_PRESETS, load_config
 
-BENCHMARKS = ["mathvista", "hallusionbench", "chartqa"]
-SPLIT = 50  # each benchmark's n_samples examples split evenly across cuda:0 / cuda:1
+BENCHMARKS = sorted(DATASET_PRESETS)  # currently: chartqa, hallusionbench, mathvista, mmmu, realworldqa
 LOG_DIR = Path("/kaggle/working")
 STATUS_PATH = checkpoint_dir() / "run_status.json"
 
@@ -44,10 +44,12 @@ def write_status(**fields) -> None:
         json.dump(payload, f, indent=2)
 
 
-def run_benchmark(benchmark: str, config_path: Optional[str]) -> None:
+def run_benchmark(benchmark: str, config_path: Optional[str], n_samples: Optional[int] = None) -> None:
     cfg = load_config(config_path, dataset=benchmark)
+    if n_samples is not None:
+        cfg["data"]["n_samples"] = n_samples
     n = cfg["data"]["n_samples"]
-    mid = min(SPLIT, n)
+    mid = n // 2  # always an even 50/50 split of however many examples this run uses
 
     write_status(benchmark=benchmark, status="running", gpu0_range=[0, mid], gpu1_range=[mid, n])
     print(f"\n=== {benchmark}: cuda:0[0:{mid}] + cuda:1[{mid}:{n}] ===", flush=True)
@@ -102,12 +104,16 @@ def main() -> None:
         nargs="+",
         default=BENCHMARKS,
         choices=sorted(DATASET_PRESETS),
-        help="Which benchmark(s) to run, e.g. --benchmarks chartqa. Default: all three.",
+        help="Which benchmark(s) to run, e.g. --benchmarks chartqa. Default: all configured benchmarks.",
+    )
+    parser.add_argument(
+        "--n-samples", type=int, default=None,
+        help="How many examples to run per benchmark. Overrides config's data.n_samples for all of them.",
     )
     args = parser.parse_args()
 
     for benchmark in args.benchmarks:
-        run_benchmark(benchmark, args.config)
+        run_benchmark(benchmark, args.config, n_samples=args.n_samples)
 
     write_status(benchmark=None, status="all_done")
     print("\nAll benchmarks complete.", flush=True)

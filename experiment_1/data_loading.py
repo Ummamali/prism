@@ -9,7 +9,8 @@ to normalize whichever benchmark you picked into one common on-disk format,
 so inference.py (STAGE 2) never has to know which benchmark it's scoring.
 
 Usage:
-    python experiment_1/data_loading.py [--config experiment_1/config.yaml] [--dataset mathvista|hallusionbench|chartqa]
+    python experiment_1/data_loading.py [--config experiment_1/config.yaml] \
+        [--dataset mathvista|hallusionbench|chartqa|mmmu|realworldqa] [--n-samples N]
 
 Saves (paths are {dataset}-templated, see config.yaml):
     experiment_1/data/images_{dataset}/{pid}.png   -- one image per sampled item
@@ -49,10 +50,18 @@ def main() -> None:
         choices=sorted(DATASET_PRESETS),
         help="Benchmark preset to load. Overrides config's data.dataset.",
     )
+    parser.add_argument(
+        "--n-samples",
+        type=int,
+        default=None,
+        help="How many examples to sample from this benchmark. Overrides config's data.n_samples.",
+    )
     args = parser.parse_args()
 
     cfg = load_config(args.config, dataset=args.dataset)
     data_cfg = cfg["data"]
+    if args.n_samples is not None:
+        data_cfg["n_samples"] = args.n_samples
     dataset_key = data_cfg["dataset"]
     preset = DATASET_PRESETS[dataset_key]
 

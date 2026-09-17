@@ -43,7 +43,16 @@ def load_model(cfg: dict, device_override: Optional[str] = None) -> LoadedModel:
 
     processor = AutoProcessor.from_pretrained(processor_name)
 
-    if "Qwen2-VL" in model_name or "Qwen2.5-VL" in model_name:
+    if "Qwen3-VL" in model_name:
+        if "Moe" in model_name or "MoE" in model_name or "A3B" in model_name:
+            from transformers import Qwen3VLMoeForConditionalGeneration
+
+            model_cls = Qwen3VLMoeForConditionalGeneration
+        else:
+            from transformers import Qwen3VLForConditionalGeneration
+
+            model_cls = Qwen3VLForConditionalGeneration
+    elif "Qwen2-VL" in model_name or "Qwen2.5-VL" in model_name:
         model_cls = Qwen2VLForConditionalGeneration
         if "Qwen2.5-VL" in model_name:
             from transformers import Qwen2_5_VLForConditionalGeneration

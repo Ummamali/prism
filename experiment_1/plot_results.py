@@ -31,13 +31,22 @@ import pandas as pd
 
 from lib.config import DATASET_PRESETS, load_config, resolve_path
 
-# Categorical palette slots 1 (blue) and 2 (orange) - the default order's
-# first two slots, which validate CVD-safe across all pairwise comparisons
-# in both light and dark modes (see dataviz skill references/palette.md).
+# Categorical palette slots 1-5 (blue, orange, aqua, yellow, magenta) - the
+# default order's first five slots (see dataviz skill references/palette.md).
+# NOTE: only the first 3 slots validate CVD-safe under "all pairs" (the
+# check beta_scatter.png's plot needs, since every dataset there is visible
+# at once); slots 4-5 are only adjacent-pair-safe. If all 5 benchmarks are
+# ever passed to plot_beta_scatter() together, re-run the dataviz skill's
+# validator on the resulting 5-way pairing before trusting that one plot's
+# color-only distinctions - per_step_trends.png/beta_ci.png/
+# redundancy_trend.png are unaffected since they never overlay more than
+# one dataset's points at the same position.
 COLORS = {
     "mathvista": "#2a78d6",
     "hallusionbench": "#eb6834",
-    "chartqa": "#1baf7a",  # slot 3, in case a third dataset is plotted later
+    "chartqa": "#1baf7a",
+    "mmmu": "#eda100",
+    "realworldqa": "#e87ba4",
 }
 ZERO_LINE_COLOR = "#c3c2b7"  # palette's "baseline/axis" role
 GRID_COLOR = "#e1e0d9"       # palette's "gridline (hairline)" role

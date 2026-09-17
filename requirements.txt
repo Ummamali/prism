@@ -1,5 +1,5 @@
 torch>=2.6
-transformers>=4.57
+transformers>=4.57  # Qwen3-VL support landed in 4.57; bump if load_model() errors on Qwen3VLForConditionalGeneration
 accelerate>=0.34
 pillow
 requests

@@ -6,9 +6,25 @@ model:
   processor_name: null   # defaults to model.name if null
   dtype: "float16"         # force fp16 (T4 has no bf16 tensor-core support; "auto" loads bf16)
   device: "auto"           # "auto" -> cuda if available else cpu
-  max_new_tokens: 256      # cap on generated CoT length per trajectory
-  do_sample: false         # greedy decoding for reproducibility
-  temperature: 1.0         # only used if do_sample: true
+  # Cap on generated CoT length per trajectory. This is a "Thinking" model -
+  # it reasons inside <think>...</think> before answering, and a too-small
+  # cap truncates it mid-reasoning (256 was truncating essentially every
+  # trajectory). 8192 avoids that for this model size without paying for
+  # the 32K-81K budgets Qwen recommends for reproducing full competition-
+  # math benchmarks, which would be overkill for this pilot's simpler tasks.
+  max_new_tokens: 8192
+  # Qwen3-VL's own model card explicitly warns against greedy decoding for
+  # "Thinking" mode: it can cause performance degradation and endless
+  # repetition loops (the model gets stuck repeating a phrase until it hits
+  # max_new_tokens). do_sample: false was silently producing exactly that
+  # failure mode. Qwen's recommended thinking-mode sampling settings below
+  # avoid it; generation_seed (used in lib/scoring.py) makes each example's
+  # generation reproducible across re-runs despite sampling.
+  do_sample: true
+  temperature: 0.6
+  top_p: 0.95
+  top_k: 20
+  generation_seed: 42      # base seed; combined with each example's pid so runs are reproducible
 
 data:
   dataset: "mathvista"     # one of: mathvista, hallusionbench, chartqa (see common.DATASET_PRESETS)

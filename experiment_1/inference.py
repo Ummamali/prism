@@ -64,7 +64,9 @@ def scrub_prefix(blind_steps: list[str], s: int) -> str:
     return cumulative_text(blind_steps, n_take)
 
 
-def run_example(loaded, image_full: Image.Image, image_ablated: Image.Image, question: str, cfg: dict) -> dict:
+def run_example(
+    loaded, image_full: Image.Image, image_ablated: Image.Image, question: str, cfg: dict, pid: str = ""
+) -> dict:
     """Run one example through the full C1-C4 harness: generate the real
     and blind trajectories, then score every step of the real trajectory
     under all four (image, prefix) conditions. Returns everything needed
@@ -74,13 +76,13 @@ def run_example(loaded, image_full: Image.Image, image_ablated: Image.Image, que
 
     # The "real" trajectory: the model's actual step-by-step answer, with
     # the real image. This is what we're measuring image-dependence FOR.
-    real_text = generate_trajectory(loaded, image_full, question, cfg)
+    real_text = generate_trajectory(loaded, image_full, question, cfg, seed_tag=f"{pid}:real")
     real_steps = segment_steps(real_text, seg_cfg["method"], seg_cfg["min_chars_per_step"])
 
     # The "blind" trajectory: a second, independent answer generated with
     # the image ablated from the start. Only used to build scrub(y_<s)
     # below - not scored or reported on its own.
-    blind_text = generate_blind_trajectory(loaded, image_ablated, question, cfg)
+    blind_text = generate_blind_trajectory(loaded, image_ablated, question, cfg, seed_tag=f"{pid}:blind")
     blind_steps = segment_steps(blind_text, seg_cfg["method"], seg_cfg["min_chars_per_step"])
 
     step_records = []
@@ -156,7 +158,7 @@ def run_shard(
         image_ablated = ablate_image(image_full, ablation_op)
 
         try:
-            result = run_example(loaded, image_full, image_ablated, ex["question"], cfg)
+            result = run_example(loaded, image_full, image_ablated, ex["question"], cfg, pid=ex["pid"])
         except Exception as e:  # noqa: BLE001 - pilot harness, log and continue
             print(f"[WARN] example {ex['pid']} failed: {e}")
             continue

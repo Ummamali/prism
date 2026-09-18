@@ -7,9 +7,11 @@ whichever one you haven't done yet), instead of one long automated run.
 
 Reuses run_all_benchmarks.py's run_benchmark()/write_status() so the two
 scripts can never drift apart: same checkpoints/run_status.json shape, same
-per-GPU log file naming, same "complete" checkpoint zip at the end - so
-monitor.py, plot_results.py, checkpoint_now.py etc. all work unchanged
-regardless of which of the two scripts actually produced the results.
+per-GPU log file naming, same automatic decomposition.py run once all
+requested examples are evaluated, same "complete" checkpoint zip at the
+end - so monitor.py, plot_results.py, checkpoint_now.py etc. all work
+unchanged regardless of which of the two scripts actually produced the
+results.
 
 Meant to be launched as a background subprocess from a Kaggle notebook
 cell, same trick as run_all_benchmarks.py:

@@ -39,9 +39,9 @@ segmentation:
   min_chars_per_step: 4     # drop degenerate near-empty "steps"
 
 output:
-  results_dir: "experiment_1/results_{dataset}"
-  raw_dir: "experiment_1/results_{dataset}/per_example"
-  aggregate_dir: "experiment_1/results_{dataset}/aggregate"
+  results_dir: "/kaggle/working/results/results_{dataset}"
+  raw_dir: "/kaggle/working/results/results_{dataset}/per_example"
+  aggregate_dir: "/kaggle/working/results/results_{dataset}/aggregate"
 
 analysis:
   bootstrap_iters: 2000

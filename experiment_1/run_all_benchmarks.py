@@ -1,8 +1,9 @@
 """Run all configured benchmarks (mathvista, hallusionbench, chartqa, mmmu,
 realworldqa) one at a time, each split 50/50 across both GPUs in parallel
-via inference.py subprocesses. Once both GPU halves of a benchmark finish,
-checkpoints (zips) that benchmark's combined results before moving to the
-next benchmark.
+via inference.py subprocesses. Once both GPU halves of a benchmark finish
+(i.e. every requested example has been evaluated), automatically runs
+decomposition.py (STAGE 3) for that benchmark, then checkpoints (zips) the
+combined results before moving to the next benchmark.
 
 Meant to be launched once as a single background process (see notebook
 cell) and left to run unattended. Keeps experiment_1/checkpoints/run_status.json
@@ -75,12 +76,30 @@ def run_benchmark(benchmark: str, config_path: Optional[str], n_samples: Optiona
     log1.close()
 
     ok = p0.returncode == 0 and p1.returncode == 0
+
+    decomp_ok = None
+    if ok:
+        decomp_log = open(LOG_DIR / f"decomposition_{benchmark}.log", "w")
+        decomp_args = [sys.executable, "experiment_1/decomposition.py", "--dataset", benchmark]
+        if config_path is not None:
+            decomp_args += ["--config", config_path]
+        decomp = subprocess.run(decomp_args, stdout=decomp_log, stderr=subprocess.STDOUT)
+        decomp_log.close()
+        decomp_ok = decomp.returncode == 0
+        if not decomp_ok:
+            print(
+                f"[WARN] decomposition.py failed for {benchmark} (exit code "
+                f"{decomp.returncode}); check decomposition_{benchmark}.log.",
+                flush=True,
+            )
+
     zip_path = zip_dataset_results(cfg, benchmark, label="complete")
     write_status(
         benchmark=benchmark,
         status="benchmark_done" if ok else "benchmark_failed",
         gpu0_exit=p0.returncode,
         gpu1_exit=p1.returncode,
+        decomposition_ok=decomp_ok,
         checkpoint=str(zip_path) if zip_path else None,
     )
     print(

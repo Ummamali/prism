@@ -6,13 +6,13 @@ model:
   processor_name: null   # defaults to model.name if null
   dtype: "float16"         # force fp16 (T4 has no bf16 tensor-core support; "auto" loads bf16)
   device: "auto"           # "auto" -> cuda if available else cpu
-  # Cap on generated CoT length per trajectory. This is a "Thinking" model -
-  # it reasons inside <think>...</think> before answering, and a too-small
-  # cap truncates it mid-reasoning (256 was truncating essentially every
-  # trajectory). 8192 avoids that for this model size without paying for
-  # the 32K-81K budgets Qwen recommends for reproducing full competition-
-  # math benchmarks, which would be overkill for this pilot's simpler tasks.
-  max_new_tokens: 8192
+  # Cap on generated CoT length per trajectory. Blind (no-image) generations
+  # in particular were observed to ramble through the entire budget instead
+  # of converging (e.g. 655.json: an 8192-token blind trajectory that never
+  # settles on an answer). Lowered from 8192 to 1536 and paired with
+  # budget_forcing below, which makes the model commit to a final answer
+  # inside the cap instead of getting truncated mid-thought.
+  max_new_tokens: 1536
   # Qwen3-VL's own model card explicitly warns against greedy decoding for
   # "Thinking" mode: it can cause performance degradation and endless
   # repetition loops (the model gets stuck repeating a phrase until it hits
@@ -24,7 +24,21 @@ model:
   temperature: 0.6
   top_p: 0.95
   top_k: 20
+  # Blocks any repeated 4-gram during generation - cuts down the "wait, let
+  # me check again" loops that were partly why blind trajectories ran so
+  # long in the first place.
+  no_repeat_ngram_size: 4
   generation_seed: 42      # base seed; combined with each example's pid so runs are reproducible
+
+# Budget forcing (s1-style): generate stage1_fraction of max_new_tokens
+# normally, then check whether the model has already committed to an
+# answer. If not, splice in `interrupt_text` and generate the remaining
+# budget so the model is forced to conclude instead of being cut off
+# mid-reasoning by a bare token-count truncation.
+budget_forcing:
+  enabled: true
+  stage1_fraction: 0.75
+  interrupt_text: "\n\nI need to stop reasoning now and give my final answer:\n\n**Final Answer:**"
 
 data:
   dataset: "mathvista"     # one of: mathvista, hallusionbench, chartqa (see common.DATASET_PRESETS)

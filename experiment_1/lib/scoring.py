@@ -191,22 +191,23 @@ def _seed_for(cfg: dict, seed_tag: str) -> int:
     return int(digest[:8], 16)
 
 
-def generate_trajectory(
-    loaded: LoadedModel, image: Image.Image, question: str, cfg: dict, seed_tag: str = ""
-) -> str:
-    """Generate the model's free-text step-by-step answer to `question`
-    about `image`. This is a normal autoregressive generation call (the
-    model picks its own tokens); teacher-forced *scoring* of that text
-    against alternative conditions happens separately, in
-    score_continuation() below.
+_FINAL_ANSWER_RE = re.compile(r"final answer|\\boxed\{", re.IGNORECASE)
+
+
+def _has_final_answer(text: str) -> bool:
+    """True if `text` already looks like it committed to an answer (a
+    "Final Answer" phrase or a \\boxed{...} span), used by budget forcing
+    to decide whether stage 2 needs a forced interrupt or the model is
+    already wrapping up on its own.
     """
-    model, processor, device = loaded.model, loaded.processor, loaded.device
-    model_cfg = cfg["model"]
+    return bool(_FINAL_ANSWER_RE.search(text))
 
-    text = build_prompt_prefix(processor, question)
-    inputs = processor(text=[text], images=[image], return_tensors="pt", padding=True).to(device)
 
-    gen_kwargs = dict(max_new_tokens=model_cfg.get("max_new_tokens", 256))
+def _base_gen_kwargs(model_cfg: dict) -> dict:
+    """Sampling/repetition kwargs shared by every model.generate() call,
+    independent of how many tokens this particular call is allowed.
+    """
+    gen_kwargs = {}
     if model_cfg.get("do_sample", True):
         # Qwen3-VL's model card: greedy decoding in "Thinking" mode can
         # cause performance degradation and endless repetition loops, so
@@ -220,16 +221,104 @@ def generate_trajectory(
     else:
         gen_kwargs.update(do_sample=False)
 
-    if seed_tag:
-        torch.manual_seed(_seed_for(cfg, seed_tag))
+    no_repeat_ngram_size = model_cfg.get("no_repeat_ngram_size")
+    if no_repeat_ngram_size:
+        gen_kwargs["no_repeat_ngram_size"] = no_repeat_ngram_size
+    return gen_kwargs
 
+
+def _generate_raw(
+    loaded: LoadedModel, image: Image.Image, text_prompt: str, max_new_tokens: int, gen_kwargs: dict
+) -> tuple[str, int]:
+    """One model.generate() call: (image, flat prompt string) -> (newly
+    generated text, number of newly generated tokens), prompt tokens
+    stripped. No chat-template handling here - `text_prompt` is already the
+    exact string to condition on, built by the caller via
+    build_prompt_prefix() (+ any prior stage's output for multi-stage
+    budget-forced generation).
+
+    Returns the raw new-token count (not a re-tokenization of the decoded
+    text, which can disagree with it after a decode/re-encode round trip)
+    so callers can tell early EOS apart from hitting max_new_tokens.
+    """
+    model, processor, device = loaded.model, loaded.processor, loaded.device
+
+    inputs = processor(text=[text_prompt], images=[image], return_tensors="pt", padding=True).to(device)
     with torch.no_grad():
-        output_ids = model.generate(**inputs, **gen_kwargs)
+        output_ids = model.generate(**inputs, max_new_tokens=max_new_tokens, **gen_kwargs)
 
     prompt_len = inputs["input_ids"].shape[1]
     new_ids = output_ids[:, prompt_len:]  # drop the prompt tokens, keep only what the model generated
     text_out = processor.batch_decode(new_ids, skip_special_tokens=True)[0]
-    return extract_trajectory_text(text_out)
+    return text_out, new_ids.shape[1]
+
+
+def generate_trajectory(
+    loaded: LoadedModel, image: Image.Image, question: str, cfg: dict, seed_tag: str = ""
+) -> str:
+    """Generate the model's free-text step-by-step answer to `question`
+    about `image`. This is a normal autoregressive generation call (the
+    model picks its own tokens); teacher-forced *scoring* of that text
+    against alternative conditions happens separately, in
+    score_continuation() below.
+
+    When cfg["budget_forcing"]["enabled"] is true, generation happens in
+    two stages instead of one uninterrupted call:
+      Stage 1: generate stage1_fraction of max_new_tokens normally.
+      Stage 2: if the model hasn't already committed to a final answer
+        (see _has_final_answer), splice in `interrupt_text` and generate
+        the remaining budget - forcing closure instead of letting a bare
+        token-count cutoff truncate the trajectory mid-reasoning (the
+        failure mode behind e.g. 655.json's runaway blind trajectory).
+    Applies identically to real and blind trajectories, since
+    generate_blind_trajectory() below just calls this with an ablated
+    image.
+    """
+    model_cfg = cfg["model"]
+    max_new_tokens = model_cfg.get("max_new_tokens", 256)
+    gen_kwargs = _base_gen_kwargs(model_cfg)
+
+    prompt_text = build_prompt_prefix(loaded.processor, question)
+    bf_cfg = cfg.get("budget_forcing", {})
+
+    if seed_tag:
+        torch.manual_seed(_seed_for(cfg, seed_tag))
+
+    if not bf_cfg.get("enabled", False):
+        text_out, _ = _generate_raw(loaded, image, prompt_text, max_new_tokens, gen_kwargs)
+        return extract_trajectory_text(text_out)
+
+    stage1_fraction = bf_cfg.get("stage1_fraction", 0.75)
+    stage1_tokens = max(1, int(max_new_tokens * stage1_fraction))
+    stage2_tokens = max(0, max_new_tokens - stage1_tokens)
+    interrupt_text = bf_cfg.get(
+        "interrupt_text",
+        "\n\nI need to stop reasoning now and give my final answer:\n\n**Final Answer:**",
+    )
+
+    stage1_text, stage1_n_new = _generate_raw(loaded, image, prompt_text, stage1_tokens, gen_kwargs)
+
+    # Model already stopped on its own (hit EOS before exhausting stage 1's
+    # budget) - it's done, no need to force anything.
+    finished_naturally = stage1_n_new < stage1_tokens
+
+    if finished_naturally or stage2_tokens == 0:
+        return extract_trajectory_text(stage1_text)
+
+    if _has_final_answer(stage1_text):
+        # Already wrapping up on its own - let it finish naturally, no
+        # forced interrupt text needed.
+        if seed_tag:
+            torch.manual_seed(_seed_for(cfg, f"{seed_tag}:s2"))
+        stage2_text, _ = _generate_raw(loaded, image, prompt_text + stage1_text, stage2_tokens, gen_kwargs)
+        return extract_trajectory_text(stage1_text + stage2_text)
+
+    if seed_tag:
+        torch.manual_seed(_seed_for(cfg, f"{seed_tag}:s2"))
+    stage2_text, _ = _generate_raw(
+        loaded, image, prompt_text + stage1_text + interrupt_text, stage2_tokens, gen_kwargs
+    )
+    return extract_trajectory_text(stage1_text + interrupt_text + stage2_text)
 
 
 def generate_blind_trajectory(

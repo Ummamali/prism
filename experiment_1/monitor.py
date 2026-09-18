@@ -12,17 +12,24 @@ extra instrumentation needed:
   - /kaggle/working/gpu{0,1}_{benchmark}.log     -> per-GPU subprocess output
     (mtime recency + last line -> running / stalled / finished)
 
-Rendering mode is auto-detected from sys.stdout.isatty():
+Rendering mode is auto-detected:
+  - running inside a Jupyter/IPython kernel (Kaggle notebook cell run as
+    `%run experiment_1/monitor.py`, IN-PROCESS - NOT `!python ...`): full
+    multi-line view, redrawn in place via IPython.display.clear_output().
+    `!python ...` forks a detached subprocess whose stdout the notebook can
+    only append as plain text - there is no way for that subprocess to
+    erase previously-printed cell output, which is why that invocation
+    scrolls forever instead of updating in place. Use `%run` for monitor.py.
   - real terminal (ssh, Kaggle's console tab): full multi-line view,
     redrawn in place with an ANSI clear each tick.
-  - piped/captured stdout (a Jupyter/Kaggle notebook cell run as
-    `!python experiment_1/monitor.py`): ANSI clear-screen codes sent from a
-    detached subprocess don't reach the notebook frontend, so instead this
-    renders one single compact line and rewrites it in place with a bare
-    "\r" (carriage return) - the same trick tqdm uses, which notebook output
-    panels do honor even for piped/subprocess output.
+  - anything else (output piped/redirected to a file, no tty, no IPython):
+    one single compact line rewritten in place with a bare "\r" (carriage
+    return) - the same trick tqdm uses.
 
-Usage:
+Usage (Kaggle/Jupyter notebook cell):
+    %run experiment_1/monitor.py
+
+Usage (terminal):
     python experiment_1/monitor.py
 """
 
@@ -40,6 +47,22 @@ from lib.io_utils import load_jsonl
 REFRESH_SECONDS = 1
 STALL_SECONDS = 30  # no log output in this long -> flag as possibly stuck
 IS_TTY = sys.stdout.isatty()
+
+
+def _in_ipython() -> bool:
+    """True only when running IN-PROCESS inside a Jupyter/IPython kernel
+    (e.g. via %run). A `!python monitor.py` subprocess does not satisfy
+    this even though IPython is installed in that environment too - it has
+    no kernel of its own, so get_ipython() returns None there.
+    """
+    try:
+        from IPython import get_ipython
+        return get_ipython() is not None
+    except ImportError:
+        return False
+
+
+IS_IPYTHON = _in_ipython()
 
 
 def gpu_status(log_path: Path) -> tuple[str, str]:
@@ -109,39 +132,52 @@ def gather() -> dict:
     return result
 
 
-def render_multiline(state: dict) -> None:
-    print("\033[2J\033[H", end="")  # ANSI clear + cursor home
-    print(f"PRISM experiment monitor - {time.strftime('%Y-%m-%d %H:%M:%S')}")
-    print("=" * 60)
+def build_lines(state: dict) -> list[str]:
+    lines = [
+        f"PRISM experiment monitor - {time.strftime('%Y-%m-%d %H:%M:%S')}",
+        "=" * 60,
+    ]
 
     if not state["have_status"]:
-        print("\nWaiting for run_all_benchmarks.py to start "
-              "(no run_status.json yet)...")
-        return
+        lines.append("\nWaiting for run_all_benchmarks.py to start "
+                      "(no run_status.json yet)...")
+        return lines
 
     benchmark = state["benchmark"]
-    print(f"\n1) Current benchmark: {benchmark or '(none)'}  [{state['overall_status']}]")
+    lines.append(f"\n1) Current benchmark: {benchmark or '(none)'}  [{state['overall_status']}]")
 
     if not benchmark:
-        print("\n2) GPU 0: idle")
-        print("3) GPU 1: idle")
-        print("\n4) Overall progress: n/a")
-        return
+        lines.append("\n2) GPU 0: idle")
+        lines.append("3) GPU 1: idle")
+        lines.append("\n4) Overall progress: n/a")
+        return lines
 
-    print(f"\n2) GPU 0: {state['gpu0_stat']}")
-    print(f"   examples evaluated: {state['gpu0_done']}/{state['gpu0_total']}")
+    lines.append(f"\n2) GPU 0: {state['gpu0_stat']}")
+    lines.append(f"   examples evaluated: {state['gpu0_done']}/{state['gpu0_total']}")
     if state["gpu0_tail"]:
-        print(f"   last log line: {state['gpu0_tail']}")
+        lines.append(f"   last log line: {state['gpu0_tail']}")
 
-    print(f"\n3) GPU 1: {state['gpu1_stat']}")
-    print(f"   examples evaluated: {state['gpu1_done']}/{state['gpu1_total']}")
+    lines.append(f"\n3) GPU 1: {state['gpu1_stat']}")
+    lines.append(f"   examples evaluated: {state['gpu1_done']}/{state['gpu1_total']}")
     if state["gpu1_tail"]:
-        print(f"   last log line: {state['gpu1_tail']}")
+        lines.append(f"   last log line: {state['gpu1_tail']}")
 
     total_done = state["gpu0_done"] + state["gpu1_done"]
     total = state["gpu0_total"] + state["gpu1_total"]
     pct = (100 * total_done / total) if total else 0.0
-    print(f"\n4) Overall progress ({benchmark}): {total_done}/{total} ({pct:.1f}%)")
+    lines.append(f"\n4) Overall progress ({benchmark}): {total_done}/{total} ({pct:.1f}%)")
+    return lines
+
+
+def render_multiline(state: dict) -> None:
+    print("\033[2J\033[H", end="")  # ANSI clear + cursor home
+    print("\n".join(build_lines(state)))
+
+
+def render_notebook(state: dict) -> None:
+    from IPython.display import clear_output
+    clear_output(wait=True)
+    print("\n".join(build_lines(state)))
 
 
 _last_line_len = 0
@@ -173,7 +209,9 @@ def render_single_line(state: dict) -> None:
 
 def render() -> None:
     state = gather()
-    if IS_TTY:
+    if IS_IPYTHON:
+        render_notebook(state)
+    elif IS_TTY:
         render_multiline(state)
     else:
         render_single_line(state)

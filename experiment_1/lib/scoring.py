@@ -16,6 +16,7 @@ import torch
 from PIL import Image
 
 from .model import LoadedModel
+from .progress import report_stage
 
 # ---------------------------------------------------------------------------
 # Image ablation ("blind-drop" condition, proposal §5.4)
@@ -281,10 +282,19 @@ def generate_trajectory(
     prompt_text = build_prompt_prefix(loaded.processor, question)
     bf_cfg = cfg.get("budget_forcing", {})
 
+    # seed_tag is always "{pid}:real" or "{pid}:blind" by convention (see
+    # _seed_for's docstring) - reused here to label progress reports
+    # without adding a separate pid parameter to every call site.
+    if ":" in seed_tag:
+        _progress_pid, _progress_kind = seed_tag.rsplit(":", 1)
+    else:
+        _progress_pid, _progress_kind = (seed_tag or "?"), "gen"
+
     if seed_tag:
         torch.manual_seed(_seed_for(cfg, seed_tag))
 
     if not bf_cfg.get("enabled", False):
+        report_stage(loaded.device, _progress_pid, f"{_progress_kind}:generate")
         text_out, _ = _generate_raw(loaded, image, prompt_text, max_new_tokens, gen_kwargs)
         return extract_trajectory_text(text_out)
 
@@ -296,6 +306,7 @@ def generate_trajectory(
         "\n\nI need to stop reasoning now and give my final answer:\n\n**Final Answer:**",
     )
 
+    report_stage(loaded.device, _progress_pid, f"{_progress_kind}:stage1")
     stage1_text, stage1_n_new = _generate_raw(loaded, image, prompt_text, stage1_tokens, gen_kwargs)
 
     # Model already stopped on its own (hit EOS before exhausting stage 1's
@@ -310,11 +321,13 @@ def generate_trajectory(
         # forced interrupt text needed.
         if seed_tag:
             torch.manual_seed(_seed_for(cfg, f"{seed_tag}:s2"))
+        report_stage(loaded.device, _progress_pid, f"{_progress_kind}:stage2")
         stage2_text, _ = _generate_raw(loaded, image, prompt_text + stage1_text, stage2_tokens, gen_kwargs)
         return extract_trajectory_text(stage1_text + stage2_text)
 
     if seed_tag:
         torch.manual_seed(_seed_for(cfg, f"{seed_tag}:s2"))
+    report_stage(loaded.device, _progress_pid, f"{_progress_kind}:stage2")
     stage2_text, _ = _generate_raw(
         loaded, image, prompt_text + stage1_text + interrupt_text, stage2_tokens, gen_kwargs
     )

@@ -37,6 +37,7 @@ from lib.checkpoint import zip_dataset_results
 from lib.config import DATASET_PRESETS, load_config, resolve_path
 from lib.io_utils import load_jsonl
 from lib.model import load_model
+from lib.progress import clear_progress, report_stage
 from lib.scoring import (
     ablate_image,
     cumulative_text,
@@ -86,15 +87,23 @@ def run_example(
     blind_steps = segment_steps(blind_text, seg_cfg["method"], seg_cfg["min_chars_per_step"])
 
     step_records = []
-    for s in range(1, len(real_steps) + 1):
+    n_steps = len(real_steps)
+    for s in range(1, n_steps + 1):
         target = real_steps[s - 1]  # the step we're scoring, y_s
         prefix_real = cumulative_text(real_steps, s - 1)  # y_<s : what the model actually said before this step
         prefix_scrub = scrub_prefix(blind_steps, s)  # scrub(y_<s) : a same-length prefix with no real visual info
 
-        # Same target step, four different (image, prefix) combinations:
+        # Same target step, four different (image, prefix) combinations.
+        # report_stage before each so a stuck/slow forward pass shows up in
+        # the monitor as "step s/n_steps C<k>" rather than the whole example
+        # just looking frozen with no indication of where.
+        report_stage(loaded.device, pid, f"score step {s}/{n_steps} C1")
         ell_1 = score_continuation(loaded, image_full, question, prefix_real, target)  # C1: real image,  real prefix
+        report_stage(loaded.device, pid, f"score step {s}/{n_steps} C2")
         ell_2 = score_continuation(loaded, image_ablated, question, prefix_real, target)  # C2: no image,   real prefix
+        report_stage(loaded.device, pid, f"score step {s}/{n_steps} C3")
         ell_3 = score_continuation(loaded, image_full, question, prefix_scrub, target)  # C3: real image,  scrubbed prefix
+        report_stage(loaded.device, pid, f"score step {s}/{n_steps} C4")
         ell_4 = score_continuation(loaded, image_ablated, question, prefix_scrub, target)  # C4: no image,   scrubbed prefix
 
         step_records.append(
@@ -178,6 +187,8 @@ def run_shard(
                 print(f"[checkpoint] {zip_path}")
             n_since_checkpoint = 0
             last_checkpoint_time = time.monotonic()
+
+    clear_progress(loaded.device)  # shard done - drop this device's "in flight" entry from the monitor
 
     zip_path = zip_dataset_results(cfg, dataset_key, label="shard_done")
     if zip_path:

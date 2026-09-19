@@ -1,6 +1,6 @@
 """STAGE 3 of the pipeline: compute the marginal/total dependence
 decomposition (proposal §5.1) from the per-example four-condition scores
-inference.py (STAGE 2) wrote to results_{dataset}/per_example/, and fit the
+inference.py (STAGE 2) wrote to results/{model}/{dataset}/per_example/, and fit the
 headline test (proposal §5.2): slopes beta_M, beta_T of M_s and T_s on
 normalised step index s_hat = s/S, and Delta-beta = beta_T - beta_M.
 
@@ -26,7 +26,7 @@ model with random intercepts by item/model (§5.2) -- reasonable for a
 presented as the full analysis.
 
 Usage:
-    python experiment_1/decomposition.py [--config experiment_1/config.yaml] [--dataset ...]
+    python experiment_1/decomposition.py --model qwen3vl [--config experiment_1/config.yaml] [--dataset ...]
 """
 
 from __future__ import annotations
@@ -37,7 +37,7 @@ import json
 import numpy as np
 import pandas as pd
 
-from lib.config import DATASET_PRESETS, load_config, resolve_path
+from lib.config import DATASET_PRESETS, MODEL_PRESETS, load_config, resolve_path
 
 
 def compute_step_measures(step: dict, epsilon: float) -> dict:
@@ -96,6 +96,10 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", default=None)
     parser.add_argument(
+        "--model", required=True, choices=sorted(MODEL_PRESETS),
+        help="Which model's results to aggregate (must match the inference run).",
+    )
+    parser.add_argument(
         "--dataset",
         default=None,
         choices=sorted(DATASET_PRESETS),
@@ -103,7 +107,7 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    cfg = load_config(args.config, dataset=args.dataset)
+    cfg = load_config(args.config, dataset=args.dataset, model=args.model)
     out_cfg = cfg["output"]
     analysis_cfg = cfg["analysis"]
     epsilon = float(analysis_cfg["epsilon"])
@@ -179,6 +183,9 @@ def main() -> None:
     pooled_beta_T = ols_slope(step_df["s_hat"].to_numpy(), step_df["T_s"].to_numpy())
 
     summary = {
+        "model": cfg["model"]["key"],
+        "model_name": cfg["model"]["name"],
+        "dataset": cfg["data"]["dataset"],
         "n_examples": int(slopes_df.shape[0]),
         "n_examples_with_valid_slope": int(slopes_df["beta_M"].notna().sum()),
         "beta_M": beta_M_stats,

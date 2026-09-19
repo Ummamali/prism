@@ -3,16 +3,20 @@ everything needed to make sense of it later) to checkpoints/ so completed
 work survives a Kaggle session dying mid-run. Safe to call at any time -
 zips whatever exists on disk, including a partially-written per_example/.
 
-Besides results_{dataset}/, each zip captures:
-  - the *effective* config used for this run (config.yaml plus any --dataset
-    override), since results_ alone doesn't say which model/settings
+Everything is namespaced by model (the --model key, e.g. "qwen3vl"):
+results live in results/{model}/{dataset}/, zips in checkpoints/{model}/, and
+logs in {LOG_DIR}/{model}/, so runs of different models never overwrite each other.
+
+Besides results/{model}/{dataset}/, each zip captures:
+  - the *effective* config used for this run (config.yaml plus any --dataset /
+    --model override), since the results alone don't say which model/settings
     produced them
-  - meta.json: timestamp, git commit (+dirty flag), python version, key
+  - meta.json: model key + HF id, timestamp, git commit (+dirty flag), python version, key
     package versions, GPU info - "what code and environment made this"
   - the cached data sample (pid/question/answer/image_path .jsonl) this run
     scored against, so results can be traced back to exact inputs
   - run_status.json, if present (orchestrator progress across benchmarks)
-  - this benchmark's GPU log files (gpu{i}_{dataset}.log),
+  - this benchmark's GPU log files ({model}/gpu{i}_{dataset}.log),
     if present, for post-mortem debugging of a failed/partial run
 
 Checkpoints go to /kaggle/working/checkpoints/ (persistent output storage)
@@ -54,6 +58,13 @@ def checkpoint_dir() -> Path:
     # they're covered by persistent output storage regardless of where the
     # repo itself is checked out. Elsewhere, keep them next to the repo.
     d = _KAGGLE_WORKING / "checkpoints" if _KAGGLE_WORKING.is_dir() else EXPERIMENT_DIR / "checkpoints"
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
+def log_dir(model_key: str) -> Path:
+    """Per-model directory for run_benchmark.py's gpu*/decomposition logs."""
+    d = LOG_DIR / model_key
     d.mkdir(parents=True, exist_ok=True)
     return d
 
@@ -103,8 +114,10 @@ def _gpu_info() -> list:
     ]
 
 
-def _build_meta(dataset_key: str, label: str) -> dict:
+def _build_meta(cfg: dict, dataset_key: str, label: str) -> dict:
     return {
+        "model": cfg["model"]["key"],
+        "model_name": cfg["model"]["name"],
         "dataset": dataset_key,
         "label": label or None,
         "timestamp": datetime.now().isoformat(timespec="seconds"),
@@ -117,9 +130,9 @@ def _build_meta(dataset_key: str, label: str) -> dict:
 
 
 def zip_dataset_results(cfg: dict, dataset_key: str, label: str = "") -> Optional[Path]:
-    """Zip results_{dataset_key}/ (per_example/ and/or aggregate/, whichever
-    exist), plus the config/environment/data context needed to interpret
-    them, into experiment_1/checkpoints/{dataset_key}[_{label}]_{timestamp}.zip.
+    """Zip results/{model}/{dataset_key}/ (per_example/ and/or aggregate/,
+    whichever exist), plus the config/environment/data context needed to
+    interpret them, into checkpoints/{model}/{dataset_key}[_{label}]_{timestamp}.zip.
     Returns the zip path, or None if there's nothing to checkpoint yet.
     """
     results_dir = resolve_path(cfg["output"]["results_dir"])
@@ -128,7 +141,10 @@ def zip_dataset_results(cfg: dict, dataset_key: str, label: str = "") -> Optiona
 
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     suffix = f"_{label}" if label else ""
-    zip_path = checkpoint_dir() / f"{dataset_key}{suffix}_{timestamp}.zip"
+    model_key = cfg["model"]["key"]
+    zip_dir = checkpoint_dir() / model_key
+    zip_dir.mkdir(parents=True, exist_ok=True)
+    zip_path = zip_dir / f"{dataset_key}{suffix}_{timestamp}.zip"
 
     # Write to a temp file, verify, then atomically rename: a kill mid-write
     # (or two shard processes checkpointing in the same second) can never
@@ -153,7 +169,7 @@ def _write_zip(zip_path: Path, cfg: dict, results_dir: Path, dataset_key: str, l
                 zf.write(f, arcname=str(f.relative_to(results_dir)))
 
         zf.writestr("run_config.json", json.dumps(cfg, indent=2))
-        zf.writestr("meta.json", json.dumps(_build_meta(dataset_key, label), indent=2))
+        zf.writestr("meta.json", json.dumps(_build_meta(cfg, dataset_key, label), indent=2))
 
         data_cache = resolve_path(cfg["data"]["cache_path"])
         if data_cache.exists():
@@ -164,18 +180,20 @@ def _write_zip(zip_path: Path, cfg: dict, results_dir: Path, dataset_key: str, l
             zf.write(status_path, arcname="run_status.json")
 
         for pattern in (f"gpu*_{dataset_key}.log", f"decomposition_{dataset_key}.log"):
-            for log_path in sorted(LOG_DIR.glob(pattern)):
+            for log_path in sorted(log_dir(cfg["model"]["key"]).glob(pattern)):
                 zf.write(log_path, arcname=f"logs/{log_path.name}")
 
 
-def zip_all_configured_datasets(config_path: Optional[str], dataset_keys: list[str]) -> list[Path]:
-    """Manual 'zip everything now' entry point: zips current results for
-    each of the given dataset keys, regardless of run progress. Used by
+def zip_all_configured_datasets(
+    config_path: Optional[str], dataset_keys: list[str], model: str
+) -> list[Path]:
+    """Manual 'zip everything now' entry point: zips current results of
+    `model` for each of the given dataset keys, regardless of run progress. Used by
     checkpoint_now.py.
     """
     zipped = []
     for key in dataset_keys:
-        cfg = load_config(config_path, dataset=key)
+        cfg = load_config(config_path, dataset=key, model=model)
         path = zip_dataset_results(cfg, key, label="manual")
         if path:
             zipped.append(path)

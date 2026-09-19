@@ -18,10 +18,10 @@ For each example:
 The actual generation/scoring math lives in lib/scoring.py; this file is
 the loop that drives it over a dataset and writes results to disk.
 
-Saves one JSON file per example to experiment_1/results_{dataset}/per_example/.
+Saves one JSON file per example to results/{model}/{dataset}/per_example/.
 
 Usage:
-    python experiment_1/inference.py [--config experiment_1/config.yaml] [--dataset ...] [--limit N] [--device cuda:0] [--start N] [--end N]
+    python experiment_1/inference.py --model qwen3vl [--config experiment_1/config.yaml] [--dataset ...] [--limit N] [--device cuda:0] [--start N] [--end N]
 """
 
 import argparse
@@ -34,7 +34,7 @@ from PIL import Image
 from tqdm import tqdm
 
 from lib.checkpoint import zip_dataset_results
-from lib.config import DATASET_PRESETS, load_config, resolve_path
+from lib.config import DATASET_PRESETS, MODEL_PRESETS, load_config, resolve_path
 from lib.io_utils import load_jsonl
 from lib.model import load_model
 from lib.progress import clear_progress, report_stage
@@ -201,6 +201,12 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", default=None)
     parser.add_argument(
+        "--model",
+        required=True,
+        choices=sorted(MODEL_PRESETS),
+        help="Model preset to run (see lib/config.py::MODEL_PRESETS). Results go under {model}/{dataset}/.",
+    )
+    parser.add_argument(
         "--dataset",
         default=None,
         choices=sorted(DATASET_PRESETS),
@@ -224,11 +230,11 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    cfg = load_config(args.config, dataset=args.dataset)
+    cfg = load_config(args.config, dataset=args.dataset, model=args.model)
     if args.max_new_tokens is not None:
         cfg["model"]["max_new_tokens"] = args.max_new_tokens
 
-    print(f"Loading model {cfg['model']['name']} ...")
+    print(f"Loading model {args.model} ({cfg['model']['name']}) ...")
     loaded = load_model(cfg, device_override=args.device)
     print(f"Model loaded on {loaded.device}.")
 

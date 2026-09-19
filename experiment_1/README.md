@@ -50,7 +50,8 @@ experiment_1/
 ├── lib/                       Shared building blocks. Nothing here is meant to
 │  │                           be run directly — the scripts below import from it.
 │  ├── config.py               Loads config.yaml; DATASET_PRESETS (each benchmark's
-│  │                           Hugging Face dataset id / split / column names).
+│  │                           Hugging Face dataset id / split / column names) and
+│  │                           MODEL_PRESETS (each model's HF id / loader / thinking prompt).
 │  ├── io_utils.py             Read/write the .jsonl files passed between stages.
 │  ├── model.py                Loads the vision-language model onto a GPU/CPU.
 │  ├── scoring.py              THE ACTUAL EXPERIMENT MATH: image ablation, step
@@ -88,13 +89,14 @@ benchmark (CPU-only, cheap), then one cell per benchmark:
 
 ```bash
 !python experiment_1/data_loading.py --dataset mathvista --n-samples 100
-!python experiment_1/run_benchmark.py --dataset mathvista --n-samples 100
+!python experiment_1/run_benchmark.py --model qwen3vl --dataset mathvista --n-samples 100
 ```
 
 `run_benchmark.py` options:
 
 | Flag | Meaning |
 |---|---|
+| `--model` | Required, no default. One of `qwen3vl`, `internvl3_5` (see ["Registered models"](#registered-models)). Selects the model and namespaces all outputs under `{model}/{dataset}/`. |
 | `--dataset` | Required. One of `mathvista`, `hallusionbench`, `chartqa`, `mmmu`, `realworldqa`. |
 | `--n-samples N` | How many examples to run; overrides `data.n_samples`. Examples are split evenly across the visible GPUs (with two: `[0:N/2]` to `cuda:0`, `[N/2:N]` to `cuda:1`; with one, all N on it; with none, CPU). Capped at what `data_loading.py` cached (with a warning). |
 | `--max-new-tokens N` | Cap on generated tokens per trajectory; overrides `model.max_new_tokens` (1536 by default). Use a small value for a smoke test. |
@@ -103,9 +105,26 @@ benchmark (CPU-only, cheap), then one cell per benchmark:
 Smoke test example:
 
 ```bash
-!python experiment_1/run_benchmark.py --dataset mathvista --n-samples 10 --max-new-tokens 128
+!python experiment_1/run_benchmark.py --model qwen3vl --dataset mathvista --n-samples 10 --max-new-tokens 128
+!python experiment_1/run_benchmark.py --model internvl3_5 --dataset mathvista --n-samples 10 --max-new-tokens 128
 ```
 
+### Registered models
+
+`lib/config.py::MODEL_PRESETS` (parallel to `DATASET_PRESETS`) holds each model's
+Hugging Face id, transformers loader class, and any thinking-mode prompt. `--model`
+is required by `run_benchmark.py`, `inference.py`, `run_multi_shard.py`,
+`decomposition.py`, `checkpoint_now.py` and `plot_results.py`.
+
+| Key | Hugging Face id | Notes |
+|---|---|---|
+| `qwen3vl` | `Qwen/Qwen3-VL-2B-Thinking` | The original pilot model; behaviour is unchanged. Its chat template already opens `<think>`. |
+| `internvl3_5` | `OpenGVLab/InternVL3_5-2B-HF` | The transformers-native conversion of `OpenGVLab/InternVL3_5-2B` (same weights; the original repo needs custom remote code and has no processor). Run in its documented "Thinking Mode": the model card's thinking system prompt is sent as a system message. Its template ends the generation prompt at `assistant` without opening `<think>`, so the preset appends `<think>` (as raw text) to the prompt; generation and scoring then see the same token stream and the output has Qwen's `{reasoning}</think>{answer}` shape. |
+
+Both use the same fp16 loading, sampling settings and budget forcing from `config.yaml`.
+The partial trajectory is appended as a raw string for both; InternVL's template is plain
+ChatML with no `<think>` re-wrapping, so it does not have the synthetic-`</think>` problem
+Qwen's template does.
 Note: `run_benchmark.py` does not forward `--config` to the `inference.py`
 processes, so a custom config only affects the decomposition step; edit
 `config.yaml` (or use the CLI flags above) to change inference settings.
@@ -118,7 +137,7 @@ checkpoint notices), e.g.:
 mathvista: cuda0: Scoring mathvista:  40%|████ | 10/25 | cuda1: Scoring mathvista:  36%|███▌ | 9/25
 ```
 
-Full logs are in `/kaggle/working/gpu0_{benchmark}.log`, `gpu1_{benchmark}.log` and
+Full logs are in `/kaggle/working/{model}/gpu0_{benchmark}.log`, `gpu1_{benchmark}.log` and
 `decomposition_{benchmark}.log` (one `gpu{i}` log per GPU). Live status is also written to
 `/kaggle/working/checkpoints/run_status.json`.
 
@@ -127,10 +146,10 @@ Full logs are in `/kaggle/working/gpu0_{benchmark}.log`, `gpu1_{benchmark}.log` 
 ```bash
 pip install -r requirements.txt -r experiment_1/requirements.txt
 python experiment_1/data_loading.py --dataset mathvista
-python experiment_1/inference.py --dataset mathvista --limit 3   # smoke test: 3 examples
-python experiment_1/inference.py --dataset mathvista             # full run
-python experiment_1/decomposition.py --dataset mathvista
-python experiment_1/plot_results.py --datasets mathvista hallusionbench
+python experiment_1/inference.py --model qwen3vl --dataset mathvista --limit 3   # smoke test: 3 examples
+python experiment_1/inference.py --model qwen3vl --dataset mathvista             # full run
+python experiment_1/decomposition.py --model qwen3vl --dataset mathvista
+python experiment_1/plot_results.py --model qwen3vl --datasets mathvista hallusionbench
 ```
 
 `inference.py` also accepts `--device`, `--start`/`--end` (example slice) and
@@ -215,7 +234,8 @@ stand-in prefix: `scrub(y_<s)` = the first `min(s-1, len(z))` steps of z
 
 ## How trajectories are generated
 
-- **Model:** `Qwen/Qwen3-VL-2B-Thinking`, fp16 (T4 GPUs have no bf16 support). A
+- **Model:** chosen with `--model` (see ["Registered models"](#registered-models); the
+  rest of this section describes `qwen3vl`, `Qwen/Qwen3-VL-2B-Thinking`), fp16 (T4 GPUs have no bf16 support). A
   "Thinking" model writes its reasoning inside a `<think>` block, then a final answer.
   The measured trajectory is the **whole** output, reasoning and final answer
   together, with only the `</think>` marker dropped
@@ -323,23 +343,25 @@ Real proposal content that belongs to later phases:
 
 ## Output files
 
-Paths are per-benchmark (`{dataset}` is e.g. `mathvista`). With the default config
-they live under `/kaggle/working/`:
+Paths are namespaced per model and per benchmark (`{model}` is the `--model` key, e.g.
+`qwen3vl`; `{dataset}` is e.g. `mathvista`), so runs of different models never overwrite
+each other. With the default config they live under `/kaggle/working/`:
 
-- `results/results_{dataset}/per_example/{pid}.json` — real & blind trajectories and
+- `results/{model}/{dataset}/per_example/{pid}.json` — real & blind trajectories and
   steps, `n_steps`, and per-step ℓ₁..ℓ₄.
-- `results/results_{dataset}/aggregate/per_step_measures.csv` — every step's M_s,
+- `results/{model}/{dataset}/aggregate/per_step_measures.csv` — every step's M_s,
   T_s, C_s, S_s, R_s, ŝ.
-- `results/results_{dataset}/aggregate/per_example_slopes.csv` — per-example β_M,
+- `results/{model}/{dataset}/aggregate/per_example_slopes.csv` — per-example β_M,
   β_T, Δβ, mean R_s.
-- `results/results_{dataset}/aggregate/summary.json` — aggregate β_M/β_T/Δβ with
+- `results/{model}/{dataset}/aggregate/summary.json` — records `model` / `model_name`; aggregate β_M/β_T/Δβ with
   bootstrap CIs, the pooled-OLS check, mean redundancy ratio, and a mechanical read
   of the proposal's §5.2 three-way outcome (real decay / redundancy artifact /
   mixed) — treat it as a pointer to inspect, not a conclusion.
-- `checkpoints/{dataset}_{label}_{timestamp}.zip` — crash-safety backups.
+- `checkpoints/{model}/{dataset}_{label}_{timestamp}.zip` — crash-safety backups (`meta.json` inside records the model).
+- `{model}/gpu{i}_{dataset}.log`, `{model}/decomposition_{dataset}.log` — run logs (in `/kaggle/working/`, or `experiment_1/logs/` locally).
 - `checkpoints/run_status.json` and `checkpoints/progress_{device}.json` — live run
   status.
-- `experiment_1/plots/*.png` — from `plot_results.py`: `per_step_trends`, `beta_ci`,
+- `experiment_1/plots/{model}/*.png` — from `plot_results.py`: `per_step_trends`, `beta_ci`,
   `beta_scatter`, `redundancy_trend`.
 
 ## Crash-safety and checkpoints
@@ -359,8 +381,8 @@ back to exact code, settings and inputs.
 Trigger one manually (e.g. before stopping a run early):
 
 ```bash
-python experiment_1/checkpoint_now.py                            # all benchmarks
-python experiment_1/checkpoint_now.py --dataset hallusionbench   # just one
+python experiment_1/checkpoint_now.py --model qwen3vl                            # all benchmarks
+python experiment_1/checkpoint_now.py --model qwen3vl --dataset hallusionbench   # just one
 ```
 
 **Important:** these zips only protect you *within* a live session. Kaggle only
@@ -373,7 +395,7 @@ zips, if a run matters.
 - `inference.py` — one shard on one GPU. Good for local runs and smoke tests.
 - `run_multi_shard.py` — one process per GPU working through several
   `dataset:start:end` shards with the model loaded once, e.g.
-  `python experiment_1/run_multi_shard.py --device cuda:0 --shard mathvista:0:100 --shard hallusionbench:0:50`.
+  `python experiment_1/run_multi_shard.py --model qwen3vl --device cuda:0 --shard mathvista:0:100 --shard hallusionbench:0:50`.
   Use it when you want to assign work to GPUs by hand across benchmarks.
 - `run_benchmark.py` — the turnkey option described above (reloads the model on
   each launch, in exchange for an automatic even split across GPUs and automatic decomposition).

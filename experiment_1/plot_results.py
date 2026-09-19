@@ -1,5 +1,5 @@
 """Plotting for Experiment 1: loads both benchmarks' decomposition.py
-outputs (results_{dataset}/aggregate/) and produces four PNGs under
+outputs (results/{model}/{dataset}/aggregate/) and produces four PNGs under
 experiment_1/plots/ comparing mathvista vs hallusionbench:
 
   1. per_step_trends.png   - mean M_s vs T_s over normalized step position,
@@ -16,7 +16,7 @@ baked into the plots. summary.json's own "interpretation" string is
 printed to the console instead, once per dataset.
 
 Usage:
-    python experiment_1/plot_results.py [--datasets mathvista hallusionbench]
+    python experiment_1/plot_results.py --model qwen3vl [--datasets mathvista hallusionbench]
 """
 
 from __future__ import annotations
@@ -29,7 +29,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 
-from lib.config import DATASET_PRESETS, load_config, resolve_path
+from lib.config import DATASET_PRESETS, MODEL_PRESETS, load_config, resolve_path
 
 # Categorical palette slots 1-5 (blue, orange, aqua, yellow, magenta) - the
 # default order's first five slots (see dataviz skill references/palette.md).
@@ -53,8 +53,8 @@ GRID_COLOR = "#e1e0d9"       # palette's "gridline (hairline)" role
 N_BINS = 10
 
 
-def load_dataset(dataset: str) -> dict:
-    cfg = load_config(dataset=dataset)
+def load_dataset(dataset: str, model: str) -> dict:
+    cfg = load_config(dataset=dataset, model=model)
     agg_dir = resolve_path(cfg["output"]["aggregate_dir"])
 
     step_df = pd.read_csv(agg_dir / "per_step_measures.csv")
@@ -228,16 +228,20 @@ def main() -> None:
         choices=sorted(DATASET_PRESETS),
         help="Benchmarks to load and plot together. Default: mathvista hallusionbench.",
     )
-    parser.add_argument("--out-dir", default="experiment_1/plots")
+    parser.add_argument(
+        "--model", required=True, choices=sorted(MODEL_PRESETS),
+        help="Which model's results to plot.",
+    )
+    parser.add_argument("--out-dir", default=None, help="Default: experiment_1/plots/{model}.")
     args = parser.parse_args()
 
-    out_dir = resolve_path(args.out_dir)
+    out_dir = resolve_path(args.out_dir or f"experiment_1/plots/{args.model}")
     out_dir.mkdir(parents=True, exist_ok=True)
 
     data = {}
     for dataset in args.datasets:
         try:
-            data[dataset] = load_dataset(dataset)
+            data[dataset] = load_dataset(dataset, args.model)
         except FileNotFoundError as e:
             raise SystemExit(
                 f"Missing decomposition output for {dataset!r}: {e}\n"

@@ -11,6 +11,7 @@ plain-language explanation of what ell_1..ell_4 and the four conditions
 from __future__ import annotations
 
 import re
+from typing import Optional
 
 import torch
 from PIL import Image
@@ -104,13 +105,20 @@ STEP_BY_STEP_INSTRUCTION = (
 )
 
 
-def build_messages(question: str) -> list[dict]:
+def build_messages(question: str, system_prompt: Optional[str] = None) -> list[dict]:
     """Build a chat-template message list holding just the one user turn
-    (image + question). Deliberately never includes an assistant turn - see
-    build_prompt_prefix()'s docstring for why priming with a partial answer
-    is done by raw string concatenation instead of a second chat message.
+    (image + question), preceded by a system turn if `system_prompt` is set
+    (InternVL3.5's Thinking Mode). Deliberately never includes an assistant
+    turn - see build_prompt_prefix()'s docstring for why priming with a
+    partial answer is done by raw string concatenation instead of a second
+    chat message.
     """
-    return [
+    system = (
+        [{"role": "system", "content": [{"type": "text", "text": system_prompt}]}]
+        if system_prompt
+        else []
+    )
+    return system + [
         {
             "role": "user",
             "content": [
@@ -124,7 +132,9 @@ def build_messages(question: str) -> list[dict]:
     ]
 
 
-def build_prompt_prefix(processor, question: str) -> str:
+def build_prompt_prefix(
+    processor, question: str, system_prompt: Optional[str] = None, generation_prefix: str = ""
+) -> str:
     """Render the chat template through the end of the user turn plus the
     assistant-turn preamble (add_generation_prompt=True) - i.e. exactly the
     text real generation is conditioned on before the model writes its
@@ -146,9 +156,20 @@ def build_prompt_prefix(processor, question: str) -> str:
     prompt as one flat string sidesteps that template logic entirely, so
     teacher-forced scoring always sees the exact token stream real
     generation would have produced up to that point.
+
+    InternVL3.5 (Thinking Mode) does NOT have the re-wrapping problem: its
+    chat template is plain ChatML with no <think> parsing, so it would render
+    an assistant message verbatim. It has the opposite quirk instead - the
+    generation prompt ends at "<|im_start|>assistant\\n" without opening
+    <think> - so its preset supplies `generation_prefix` ("<think>\\n"), which
+    is appended here as raw text. That makes its prompt end in an open think
+    block exactly like Qwen's, and both generation and scoring see the same
+    token stream. `system_prompt` / `generation_prefix` default to "none",
+    which leaves Qwen3-VL's prompt exactly as it always was.
     """
-    messages = build_messages(question)
-    return processor.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
+    messages = build_messages(question, system_prompt)
+    prompt = processor.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
+    return prompt + generation_prefix
 
 
 # ---------------------------------------------------------------------------
@@ -279,7 +300,9 @@ def generate_trajectory(
     max_new_tokens = model_cfg.get("max_new_tokens", 256)
     gen_kwargs = _base_gen_kwargs(model_cfg)
 
-    prompt_text = build_prompt_prefix(loaded.processor, question)
+    prompt_text = build_prompt_prefix(
+        loaded.processor, question, loaded.system_prompt, loaded.generation_prefix
+    )
     bf_cfg = cfg.get("budget_forcing", {})
 
     # seed_tag is always "{pid}:real" or "{pid}:blind" by convention (see
@@ -398,7 +421,7 @@ def score_continuation(
     """
     model, processor, device = loaded.model, loaded.processor, loaded.device
 
-    prompt_text = build_prompt_prefix(processor, question)
+    prompt_text = build_prompt_prefix(processor, question, loaded.system_prompt, loaded.generation_prefix)
     text_prefix = prompt_text + prefix_text
     text_full = prompt_text + prefix_text + target_text
 

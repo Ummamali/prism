@@ -14,10 +14,10 @@ last log line of each GPU, so it can be followed from a Kaggle cell's output.
 
 Meant to be run in a Kaggle notebook cell (works with Save & Run):
 
-    !python experiment_1/run_benchmark.py --dataset mathvista --n-samples 50
+    !python experiment_1/run_benchmark.py --model qwen3vl --dataset mathvista --n-samples 50
 
 Usage:
-    python experiment_1/run_benchmark.py --dataset chartqa [--n-samples 100] [--max-new-tokens 256] [--config experiment_1/config.yaml]
+    python experiment_1/run_benchmark.py --model qwen3vl --dataset chartqa [--n-samples 100] [--max-new-tokens 256] [--config experiment_1/config.yaml]
 """
 
 import argparse
@@ -31,8 +31,8 @@ from datetime import datetime
 from typing import Optional
 from pathlib import Path
 
-from lib.checkpoint import LOG_DIR, checkpoint_dir, zip_dataset_results
-from lib.config import DATASET_PRESETS, load_config, resolve_path
+from lib.checkpoint import checkpoint_dir, log_dir, zip_dataset_results
+from lib.config import DATASET_PRESETS, MODEL_PRESETS, load_config, resolve_path
 from lib.io_utils import load_jsonl
 
 STATUS_PATH = checkpoint_dir() / "run_status.json"
@@ -78,12 +78,13 @@ def detect_devices() -> list[str]:
 
 def run_benchmark(
     benchmark: str,
+    model: str,
     config_path: Optional[str],
     n_samples: Optional[int] = None,
     max_new_tokens: Optional[int] = None,
 ) -> bool:
     """Returns True if every inference process exited cleanly."""
-    cfg = load_config(config_path, dataset=benchmark)
+    cfg = load_config(config_path, dataset=benchmark, model=model)
     if n_samples is not None:
         cfg["data"]["n_samples"] = n_samples
     n = cfg["data"]["n_samples"]
@@ -105,11 +106,11 @@ def run_benchmark(
     # (a single device gets everything).
     ranges = [(d * n // k, (d + 1) * n // k) for d in range(k)]
 
-    write_status(benchmark=benchmark, status="running", devices=devices, ranges=[list(r) for r in ranges])
+    write_status(model=model, benchmark=benchmark, status="running", devices=devices, ranges=[list(r) for r in ranges])
     plan = " + ".join(f"{dev}[{a}:{b}]" for dev, (a, b) in zip(devices, ranges))
-    print(f"\n=== {benchmark}: {plan} ===", flush=True)
+    print(f"\n=== {model} / {benchmark}: {plan} ===", flush=True)
 
-    LOG_DIR.mkdir(parents=True, exist_ok=True)
+    logs_dir = log_dir(model)
     env = {**os.environ, "PYTHONUNBUFFERED": "1"}
     token_args = ["--max-new-tokens", str(max_new_tokens)] if max_new_tokens is not None else []
 
@@ -120,9 +121,9 @@ def run_benchmark(
     interrupted = False
     try:
         for d, (dev, (a, b)) in enumerate(zip(devices, ranges)):
-            log_path = LOG_DIR / f"gpu{d}_{benchmark}.log"
+            log_path = logs_dir / f"gpu{d}_{benchmark}.log"
             log = open(log_path, "w")
-            cmd = [sys.executable, "experiment_1/inference.py", "--dataset", benchmark,
+            cmd = [sys.executable, "experiment_1/inference.py", "--model", model, "--dataset", benchmark,
                    "--start", str(a), "--end", str(b), *token_args]
             if dev != "auto":
                 cmd += ["--device", dev]
@@ -141,8 +142,8 @@ def run_benchmark(
         ok = all(rc == 0 for rc in exit_codes)
 
         if ok:
-            decomp_log = open(LOG_DIR / f"decomposition_{benchmark}.log", "w")
-            decomp_args = [sys.executable, "experiment_1/decomposition.py", "--dataset", benchmark]
+            decomp_log = open(logs_dir / f"decomposition_{benchmark}.log", "w")
+            decomp_args = [sys.executable, "experiment_1/decomposition.py", "--model", model, "--dataset", benchmark]
             if config_path is not None:
                 decomp_args += ["--config", config_path]
             decomp = subprocess.run(decomp_args, stdout=decomp_log, stderr=subprocess.STDOUT)
@@ -168,18 +169,18 @@ def run_benchmark(
         status = "interrupted" if interrupted else ("benchmark_done" if ok else "benchmark_failed")
         # Status is written before zipping so the zip's copy of run_status.json is final.
         write_status(
-            benchmark=benchmark, status=status, exit_codes=exit_codes,
+            model=model, benchmark=benchmark, status=status, exit_codes=exit_codes,
             decomposition_ok=decomp_ok, examples_done=n_done, examples_requested=n,
         )
         zip_path = zip_dataset_results(cfg, benchmark, label="complete" if ok else "incomplete")
         write_status(
-            benchmark=benchmark, status=status, exit_codes=exit_codes,
+            model=model, benchmark=benchmark, status=status, exit_codes=exit_codes,
             decomposition_ok=decomp_ok, examples_done=n_done, examples_requested=n,
             checkpoint=str(zip_path) if zip_path else None,
         )
         zip_info = f"{zip_path}, {zip_path.stat().st_size / 1e6:.1f} MB, verified" if zip_path else "none - no results to zip"
         print(
-            f"=== {benchmark} {status} (exit codes {exit_codes}); examples {n_done}/{n} "
+            f"=== {model} / {benchmark} {status} (exit codes {exit_codes}); examples {n_done}/{n} "
             f"-> checkpoint: {zip_info} ===",
             flush=True,
         )
@@ -201,6 +202,10 @@ def run_benchmark(
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument(
+        "--model", required=True, choices=sorted(MODEL_PRESETS),
+        help="Which model to run (see lib/config.py::MODEL_PRESETS). Results go under {model}/{dataset}/.",
+    )
+    parser.add_argument(
         "--dataset", required=True, choices=sorted(DATASET_PRESETS),
         help="Which single benchmark to run.",
     )
@@ -217,8 +222,8 @@ def main() -> None:
     parser.add_argument("--config", default=None)
     args = parser.parse_args()
 
-    ok = run_benchmark(args.dataset, args.config, n_samples=args.n_samples, max_new_tokens=args.max_new_tokens)
-    write_status(benchmark=None, status="all_done" if ok else "failed")
+    ok = run_benchmark(args.dataset, args.model, args.config, n_samples=args.n_samples, max_new_tokens=args.max_new_tokens)
+    write_status(model=args.model, benchmark=None, status="all_done" if ok else "failed")
     print(f"\n{args.dataset} {'complete' if ok else 'finished with errors'}.", flush=True)
     if not ok:
         sys.exit(1)

@@ -1,8 +1,10 @@
-# Experiment 1 config — swap `model.name` to scale from a 2B pilot up to
-# larger checkpoints later. Every script in experiment_1/ reads this file.
+# Experiment 1 config. Every script in experiment_1/ reads this file.
+# The model itself (HF id, loader class, thinking-mode system prompt) is NOT
+# set here: it's chosen with the required --model flag from
+# lib/config.py::MODEL_PRESETS, and load_config() fills in model.name etc.
+# The sampling / budget-forcing knobs below apply to every model.
 
 model:
-  name: "Qwen/Qwen3-VL-2B-Thinking"
   processor_name: null   # defaults to model.name if null
   dtype: "float16"         # force fp16 (T4 has no bf16 tensor-core support; "auto" loads bf16)
   device: "auto"           # "auto" -> cuda if available else cpu
@@ -69,9 +71,10 @@ segmentation:
   min_chars_per_step: 4     # drop degenerate near-empty "steps"
 
 output:
-  results_dir: "/kaggle/working/results/results_{dataset}"
-  raw_dir: "/kaggle/working/results/results_{dataset}/per_example"
-  aggregate_dir: "/kaggle/working/results/results_{dataset}/aggregate"
+  # {model} is the --model key (e.g. qwen3vl), so runs of different models never collide.
+  results_dir: "/kaggle/working/results/{model}/{dataset}"
+  raw_dir: "/kaggle/working/results/{model}/{dataset}/per_example"
+  aggregate_dir: "/kaggle/working/results/{model}/{dataset}/aggregate"
 
 analysis:
   bootstrap_iters: 2000

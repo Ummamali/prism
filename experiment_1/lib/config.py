@@ -10,6 +10,11 @@
      a benchmark by name (data.dataset / --dataset) and this table fills
      in the rest.
 
+A third registry, MODEL_PRESETS, holds per-model facts (Hugging Face id,
+which transformers class loads it, and any system prompt needed to put it in
+"thinking" mode). The model is picked with a required --model flag on the
+run scripts, never from config.yaml, and results are namespaced by it.
+
 Only data_loading.py actually reads DATASET_PRESETS' Hugging Face-specific
 fields. Once data_loading.py has cached a benchmark to a local .jsonl file,
 every other script (inference.py, decomposition.py) only ever sees that
@@ -80,13 +85,81 @@ DATASET_PRESETS = {
     },
 }
 
+# (each preset's optional "system_prompt" / "generation_prefix" fields are
+# consumed by lib/scoring.py::build_prompt_prefix, not by the loader.)
+#
+# InternVL3.5's documented "Thinking Mode" switch: the model card says to set
+# this as the system prompt (VLMEvalKit's R1_SYSTEM_PROMPT). Without it the
+# model answers directly instead of emitting <think>...</think>.
+INTERNVL_THINKING_SYSTEM_PROMPT = (
+    "You are an AI assistant that rigorously follows this response protocol:\n"
+    "\n"
+    "1. First, conduct a detailed analysis of the question. Consider different "
+    "angles, potential solutions, and reason through the problem step-by-step. "
+    "Enclose this entire thinking process within <think> and </think> tags.\n"
+    "\n"
+    "2. After the thinking section, provide a clear, concise, and direct answer to "
+    "the user's question. Separate the answer from the think section with a newline.\n"
+    "\n"
+    "Ensure that the thinking process is thorough but remains focused on the "
+    "query. The final answer should be standalone and not reference the thinking "
+    "section."
+)
 
-def load_config(config_path: Optional[str] = None, dataset: Optional[str] = None) -> dict:
+MODEL_PRESETS = {
+    "qwen3vl": {
+        "hf_id": "Qwen/Qwen3-VL-2B-Thinking",
+        # Name of the transformers class that loads it (resolved with getattr
+        # in lib/model.py, so importing this module never imports transformers).
+        "model_class": "Qwen3VLForConditionalGeneration",
+        "trust_remote_code": False,
+        # Qwen's "Thinking" chat template already opens <think> by itself.
+        "system_prompt": None,
+        "generation_prefix": "",
+    },
+    "internvl3_5": {
+        # The transformers-native "-HF" conversion of OpenGVLab/InternVL3_5-2B
+        # (same weights). The original repo ships custom remote code with its
+        # own .chat() API and no processor, which can't be driven by the
+        # processor(text=..., images=...) + model(**inputs) flow scoring.py uses.
+        "hf_id": "OpenGVLab/InternVL3_5-2B-HF",
+        "model_class": "AutoModelForImageTextToText",
+        "trust_remote_code": False,
+        "system_prompt": INTERNVL_THINKING_SYSTEM_PROMPT,
+        # Unlike Qwen3-VL-Thinking's template, InternVL's plain ChatML template
+        # ends the generation prompt at "<|im_start|>assistant\n", so the model
+        # would write its own "<think>" as its first tokens. Scoring appends
+        # trajectory text (which has that tag stripped) straight after the
+        # prompt, so we open the block in the prompt instead - generation and
+        # teacher-forced scoring then share one token stream, and the raw output
+        # has the same shape as Qwen's ("{reasoning}</think>{answer}").
+        "generation_prefix": "<think>\n",
+    },
+}
+
+
+def _fill(template: str, **values: Optional[str]) -> str:
+    """Substitute "{key}" placeholders for every value that is not None,
+    leaving the rest untouched (str.format would raise on a missing key).
+    """
+    for key, value in values.items():
+        if value is not None:
+            template = template.replace("{" + key + "}", value)
+    return template
+
+
+def load_config(
+    config_path: Optional[str] = None, dataset: Optional[str] = None, model: Optional[str] = None
+) -> dict:
     """Load config.yaml as a plain dict, with one piece of magic: paths in
-    the `data` and `output` sections are templated with "{dataset}" (e.g.
-    "experiment_1/results_{dataset}/per_example"), and this function fills
-    that placeholder in from `dataset` (an explicit --dataset flag) or,
-    if not given, from whatever config.yaml's data.dataset already says.
+    the `data` and `output` sections are templated with "{dataset}" and
+    "{model}" (e.g. "results/{model}/{dataset}/per_example"), and this
+    function fills those placeholders in from `dataset` (an explicit
+    --dataset flag) or, if not given, from whatever config.yaml's
+    data.dataset already says, and from `model` (a MODEL_PRESETS key).
+    `model` is optional only for callers that never touch model-specific
+    output (data_loading.py); when given, cfg["model"]["key"] / ["name"] /
+    ["system_prompt"] etc. are filled in from its preset.
 
     This is *the* mechanism that keeps each benchmark's cache/results in
     its own directory without every script needing to know that - they
@@ -106,9 +179,22 @@ def load_config(config_path: Optional[str] = None, dataset: Optional[str] = None
             f"Unknown data.dataset {dataset_key!r}; expected one of {sorted(DATASET_PRESETS)}"
         )
 
-    cfg["data"]["cache_path"] = cfg["data"]["cache_path"].format(dataset=dataset_key)
+    if model is not None:
+        if model not in MODEL_PRESETS:
+            raise ValueError(f"Unknown model {model!r}; expected one of {sorted(MODEL_PRESETS)}")
+        preset = MODEL_PRESETS[model]
+        cfg["model"].update(
+            key=model,
+            name=preset["hf_id"],
+            model_class=preset["model_class"],
+            trust_remote_code=preset["trust_remote_code"],
+            system_prompt=preset["system_prompt"],
+            generation_prefix=preset["generation_prefix"],
+        )
+
+    cfg["data"]["cache_path"] = _fill(cfg["data"]["cache_path"], dataset=dataset_key)
     for out_key in ("results_dir", "raw_dir", "aggregate_dir"):
-        cfg["output"][out_key] = cfg["output"][out_key].format(dataset=dataset_key)
+        cfg["output"][out_key] = _fill(cfg["output"][out_key], dataset=dataset_key, model=model)
 
     return cfg
 

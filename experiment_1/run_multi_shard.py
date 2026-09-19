@@ -18,13 +18,13 @@ Where this fits among the multi-GPU scripts:
                            docstring.
 
 Usage (example: this GPU handles all of mathvista plus half of hallusionbench):
-    python experiment_1/run_multi_shard.py --device cuda:0 \
+    python experiment_1/run_multi_shard.py --model qwen3vl --device cuda:0 \
         --shard mathvista:0:100 --shard hallusionbench:0:50
 """
 
 import argparse
 
-from lib.config import DATASET_PRESETS, load_config
+from lib.config import DATASET_PRESETS, MODEL_PRESETS, load_config
 from lib.model import load_model
 from inference import run_shard
 
@@ -42,6 +42,12 @@ def parse_shard(spec: str) -> tuple[str, int, int]:
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", default=None)
+    parser.add_argument(
+        "--model",
+        required=True,
+        choices=sorted(MODEL_PRESETS),
+        help="Model preset to run (see lib/config.py::MODEL_PRESETS). Results go under {model}/{dataset}/.",
+    )
     parser.add_argument("--device", required=True, help="e.g. cuda:0 or cuda:1")
     parser.add_argument(
         "--shard",
@@ -62,13 +68,13 @@ def main() -> None:
     # Model config (name/dtype/device/max_new_tokens/...) is shared across all
     # presets, so any shard's config works to load it - only load_model's
     # output is reused across shards, never the dataset-specific cfg.
-    bootstrap_cfg = load_config(args.config, dataset=args.shards[0][0])
-    print(f"Loading model {bootstrap_cfg['model']['name']} on {args.device} ...")
+    bootstrap_cfg = load_config(args.config, dataset=args.shards[0][0], model=args.model)
+    print(f"Loading model {args.model} ({bootstrap_cfg['model']['name']}) on {args.device} ...")
     loaded = load_model(bootstrap_cfg, device_override=args.device)
     print(f"Model loaded on {loaded.device}. Processing {len(args.shards)} shard(s).")
 
     for dataset_key, start, end in args.shards:
-        cfg = load_config(args.config, dataset=dataset_key)
+        cfg = load_config(args.config, dataset=dataset_key, model=args.model)
         print(f"\n=== {dataset_key} [{start}:{end}] on {args.device} ===")
         run_shard(loaded, cfg, dataset_key, start=start, end=end)
 

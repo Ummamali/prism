@@ -34,9 +34,10 @@ STAGE 3  decomposition.py  turn per-step scores into M_s/T_s/C_s/S_s/R_s, per-ex
 (extra)  plot_results.py   four descriptive PNGs comparing benchmarks
 ```
 
-`run_benchmark.py` is the one-command wrapper used in practice: it launches STAGE 2
-on both GPUs at once (each takes half the examples), then runs STAGE 3 and zips the
-results.
+`run_benchmark.py` is the one-command wrapper used in practice: it detects how many
+GPUs are visible, launches STAGE 2 on all of them at once (examples split evenly;
+with a single GPU, or none, one process runs everything), then runs STAGE 3 and zips
+the results.
 
 ## Codebase map
 
@@ -63,7 +64,7 @@ experiment_1/
 ├── decomposition.py   STAGE 3
 ├── plot_results.py             Figures from STAGE 3's outputs.
 │
-├── run_benchmark.py            Kaggle launcher: ONE benchmark, both GPUs, then
+├── run_benchmark.py            Kaggle launcher: ONE benchmark, all visible GPUs, then
 │                               decomposition + checkpoint. The main entry point.
 ├── run_multi_shard.py          Kaggle helper: one GPU process working through
 │                               several benchmark "shards" without reloading the model.
@@ -95,7 +96,7 @@ benchmark (CPU-only, cheap), then one cell per benchmark:
 | Flag | Meaning |
 |---|---|
 | `--dataset` | Required. One of `mathvista`, `hallusionbench`, `chartqa`, `mmmu`, `realworldqa`. |
-| `--n-samples N` | How many examples to run; overrides `data.n_samples`. Examples `[0:N/2]` go to `cuda:0`, `[N/2:N]` to `cuda:1`. Must not exceed what `data_loading.py` cached. |
+| `--n-samples N` | How many examples to run; overrides `data.n_samples`. Examples are split evenly across the visible GPUs (with two: `[0:N/2]` to `cuda:0`, `[N/2:N]` to `cuda:1`; with one, all N on it; with none, CPU). Capped at what `data_loading.py` cached (with a warning). |
 | `--max-new-tokens N` | Cap on generated tokens per trajectory; overrides `model.max_new_tokens` (1536 by default). Use a small value for a smoke test. |
 | `--config PATH` | Alternate config file (used by the decomposition step; see note below). |
 
@@ -105,7 +106,7 @@ Smoke test example:
 !python experiment_1/run_benchmark.py --dataset mathvista --n-samples 10 --max-new-tokens 128
 ```
 
-Note: `run_benchmark.py` does not forward `--config` to the two `inference.py`
+Note: `run_benchmark.py` does not forward `--config` to the `inference.py`
 processes, so a custom config only affects the decomposition step; edit
 `config.yaml` (or use the CLI flags above) to change inference settings.
 
@@ -118,7 +119,7 @@ mathvista: cuda0: Scoring mathvista:  40%|████ | 10/25 | cuda1: Scoring 
 ```
 
 Full logs are in `/kaggle/working/gpu0_{benchmark}.log`, `gpu1_{benchmark}.log` and
-`decomposition_{benchmark}.log`. Live status is also written to
+`decomposition_{benchmark}.log` (one `gpu{i}` log per GPU). Live status is also written to
 `/kaggle/working/checkpoints/run_status.json`.
 
 **Local / single-GPU:**
@@ -346,7 +347,9 @@ they live under `/kaggle/working/`:
 On Kaggle, `/kaggle/working/checkpoints/` fills with zipped snapshots automatically:
 - every 10 completed examples *or* every 10 minutes (`*_partial_*.zip`),
 - when each GPU's half finishes (`*_shard_done_*.zip`),
-- when the whole benchmark finishes (`*_complete_*.zip`).
+- when the whole benchmark finishes and decomposition has run (`*_complete_*.zip`). `run_benchmark.py` still writes a final zip if a GPU process fails or the run is interrupted, labelled `*_incomplete_*.zip`, and exits non-zero.
+
+Every zip is written to a temp file, verified, then renamed into place, so a kill mid-write never leaves a corrupt zip. `run_benchmark.py` prints the final zip's path and size, and the number of examples that produced results (e.g. `examples 98/100` if two failed).
 
 Each zip contains the results directory plus the effective `run_config.json`,
 `meta.json` (timestamp, git commit and dirty flag, package versions, GPU info), the
@@ -373,4 +376,4 @@ zips, if a run matters.
   `python experiment_1/run_multi_shard.py --device cuda:0 --shard mathvista:0:100 --shard hallusionbench:0:50`.
   Use it when you want to assign work to GPUs by hand across benchmarks.
 - `run_benchmark.py` — the turnkey option described above (reloads the model on
-  each launch, in exchange for a simple even split and automatic decomposition).
+  each launch, in exchange for an automatic even split across GPUs and automatic decomposition).

@@ -12,7 +12,7 @@ Besides results_{dataset}/, each zip captures:
   - the cached data sample (pid/question/answer/image_path .jsonl) this run
     scored against, so results can be traced back to exact inputs
   - run_status.json, if present (orchestrator progress across benchmarks)
-  - this benchmark's GPU log files (gpu0_{dataset}.log / gpu1_{dataset}.log),
+  - this benchmark's GPU log files (gpu{i}_{dataset}.log),
     if present, for post-mortem debugging of a failed/partial run
 
 Checkpoints go to /kaggle/working/checkpoints/ (persistent output storage)
@@ -24,6 +24,7 @@ the repo for local runs.
 from __future__ import annotations
 
 import json
+import os
 import platform
 import subprocess
 import sys
@@ -38,7 +39,7 @@ from .config import EXPERIMENT_DIR, REPO_ROOT, load_config, resolve_path
 # Where run_benchmark.py writes its per-GPU inference logs on Kaggle,
 # and where checkpoints themselves land when running on Kaggle.
 _KAGGLE_WORKING = Path("/kaggle/working")
-LOG_DIR = _KAGGLE_WORKING
+LOG_DIR = _KAGGLE_WORKING if _KAGGLE_WORKING.is_dir() else EXPERIMENT_DIR / "logs"
 
 # Packages worth pinning down exactly, since they most affect reproducibility
 # of model outputs (versions not installed are silently skipped).
@@ -129,6 +130,23 @@ def zip_dataset_results(cfg: dict, dataset_key: str, label: str = "") -> Optiona
     suffix = f"_{label}" if label else ""
     zip_path = checkpoint_dir() / f"{dataset_key}{suffix}_{timestamp}.zip"
 
+    # Write to a temp file, verify, then atomically rename: a kill mid-write
+    # (or two shard processes checkpointing in the same second) can never
+    # leave a truncated/corrupt zip under the final name.
+    tmp_path = zip_path.with_name(f"{zip_path.name}.{os.getpid()}.tmp")
+    try:
+        _write_zip(tmp_path, cfg, results_dir, dataset_key, label)
+        with ZipFile(tmp_path) as zf:
+            bad = zf.testzip()
+        if bad is not None:
+            raise RuntimeError(f"checkpoint zip failed verification (corrupt member: {bad})")
+        os.replace(tmp_path, zip_path)
+    finally:
+        tmp_path.unlink(missing_ok=True)
+    return zip_path
+
+
+def _write_zip(zip_path: Path, cfg: dict, results_dir: Path, dataset_key: str, label: str) -> None:
     with ZipFile(zip_path, "w", ZIP_DEFLATED) as zf:
         for f in results_dir.rglob("*"):
             if f.is_file():
@@ -145,12 +163,9 @@ def zip_dataset_results(cfg: dict, dataset_key: str, label: str = "") -> Optiona
         if status_path.exists():
             zf.write(status_path, arcname="run_status.json")
 
-        for log_name in (f"gpu0_{dataset_key}.log", f"gpu1_{dataset_key}.log"):
-            log_path = LOG_DIR / log_name
-            if log_path.exists():
-                zf.write(log_path, arcname=f"logs/{log_name}")
-
-    return zip_path
+        for pattern in (f"gpu*_{dataset_key}.log", f"decomposition_{dataset_key}.log"):
+            for log_path in sorted(LOG_DIR.glob(pattern)):
+                zf.write(log_path, arcname=f"logs/{log_path.name}")
 
 
 def zip_all_configured_datasets(config_path: Optional[str], dataset_keys: list[str]) -> list[Path]:

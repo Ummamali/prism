@@ -50,8 +50,8 @@ experiment_1/
 ├── run_multi_shard.py           Kaggle helper: one GPU process working through
 │                                several benchmark "shards" without reloading the
 │                                model between them.
-├── run_all_benchmarks.py         Kaggle helper: a turnkey orchestrator that runs
-│                                all three benchmarks, each split across both GPUs.
+├── run_benchmark.py              Kaggle helper: runs ONE benchmark split across
+│                                both GPUs, then decomposition + checkpoint.
 ├── checkpoint_now.py             Kaggle helper: manually trigger a results backup
 │                                (zip) at any time, e.g. right before stopping early.
 │
@@ -297,22 +297,22 @@ python experiment_1/data_loading.py --dataset hallusionbench
 python experiment_1/data_loading.py --dataset chartqa
 ```
 
-**Automated run** — launches all three benchmarks in the background, one at a
-time, each split 50/50 across both GPUs in parallel:
+**Automated run** — launches one benchmark in the background, split 50/50
+across both GPUs in parallel:
 
 ```python
 import subprocess, sys
 orchestrator = subprocess.Popen(
-    [sys.executable, "experiment_1/run_all_benchmarks.py"],
+    [sys.executable, "experiment_1/run_benchmark.py", "--dataset", "chartqa"],
     stdout=open("/kaggle/working/orchestrator.log", "w"), stderr=subprocess.STDOUT,
     start_new_session=True,   # survives the notebook cell being interrupted
 )
 ```
 
-`run_all_benchmarks.py` writes its live status to
+`run_benchmark.py` writes its live status to
 `experiment_1/checkpoints/run_status.json` (which benchmark is running, each GPU's
-progress) for a separate monitor cell to poll. See the Kaggle notebook itself for
-the monitor cell code, or re-derive it: it just tails `run_status.json` plus the
+progress) for external polling. The script also prints one line every 3 seconds with
+the last log line of each GPU. The per-GPU logs are the
 per-benchmark, per-GPU log files under `/kaggle/working/`.
 
 **Crash-safety.** `experiment_1/checkpoints/` (which resolves under

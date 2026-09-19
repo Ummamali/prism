@@ -1,10 +1,10 @@
-"""Live per-example stage tracking, so monitor.py can show not just "how
+"""Live per-example stage tracking, so a status display can show not just "how
 many examples are done" but "what is the in-flight example doing right
 now, and how long has it been there" - the thing you actually need to
 diagnose one slow/stuck example instead of staring at a frozen tqdm bar.
 
 Each worker process (one per --device: a plain `python inference.py` run,
-or one of run_all_benchmarks.py's/run_multi_shard.py's per-GPU processes)
+or one of run_benchmark.py's/run_multi_shard.py's per-GPU processes)
 writes its current (pid, stage, timestamp) to its own
 checkpoints/progress_{device}.json every time it moves to a new stage.
 One file per device means concurrent GPU0/GPU1 workers never clobber each
@@ -48,7 +48,7 @@ def report_stage(device: str, pid: str, stage: str) -> None:
 
 def clear_progress(device: str) -> None:
     """Remove this device's progress file once its shard finishes, so a
-    finished worker doesn't linger in the monitor as a fake "in flight"
+    finished worker doesn't linger in a status display as a fake "in flight"
     example forever.
     """
     try:

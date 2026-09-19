@@ -12,11 +12,10 @@ Where this fits among the multi-GPU scripts:
                            in ONE process per GPU - you control exactly how work
                            is split; best when you want max GPU utilization and
                            don't mind assigning shards by hand.
-  - run_all_benchmarks.py : a turnkey orchestrator that runs all three benchmarks
-                           one at a time, each split 50/50 across both GPUs
-                           automatically - simpler to launch, but reloads the
-                           model at each benchmark boundary. See that file's
-                           docstring for the trade-off.
+  - run_benchmark.py   : a turnkey launcher that runs ONE benchmark split 50/50
+                           across both GPUs automatically - simpler to launch,
+                           but reloads the model per run. See that file's
+                           docstring.
 
 Usage (example: this GPU handles all of mathvista plus half of hallusionbench):
     python experiment_1/run_multi_shard.py --device cuda:0 \

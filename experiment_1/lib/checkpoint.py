@@ -35,7 +35,7 @@ from zipfile import ZIP_DEFLATED, ZipFile
 
 from .config import EXPERIMENT_DIR, REPO_ROOT, load_config, resolve_path
 
-# Where run_all_benchmarks.py writes its per-GPU inference logs on Kaggle,
+# Where run_benchmark.py writes its per-GPU inference logs on Kaggle,
 # and where checkpoints themselves land when running on Kaggle.
 _KAGGLE_WORKING = Path("/kaggle/working")
 LOG_DIR = _KAGGLE_WORKING

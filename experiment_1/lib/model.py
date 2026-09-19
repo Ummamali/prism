@@ -29,7 +29,7 @@ def load_model(cfg: dict, device_override: Optional[str] = None) -> LoadedModel:
 
     `device_override` lets a caller pin this to a specific GPU (e.g.
     "cuda:0" vs "cuda:1" for the dual-T4 Kaggle setup) without editing
-    config.yaml - see run_multi_shard.py / run_all_benchmarks.py.
+    config.yaml - see run_multi_shard.py / run_benchmark.py.
     """
     from transformers import AutoProcessor, Qwen2VLForConditionalGeneration
 

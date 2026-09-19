@@ -218,9 +218,15 @@ def main() -> None:
     parser.add_argument(
         "--end", type=int, default=None, help="End index (exclusive) of the example slice to run."
     )
+    parser.add_argument(
+        "--max-new-tokens", type=int, default=None,
+        help="Cap on generated tokens per trajectory. Overrides config's model.max_new_tokens.",
+    )
     args = parser.parse_args()
 
     cfg = load_config(args.config, dataset=args.dataset)
+    if args.max_new_tokens is not None:
+        cfg["model"]["max_new_tokens"] = args.max_new_tokens
 
     print(f"Loading model {cfg['model']['name']} ...")
     loaded = load_model(cfg, device_override=args.device)

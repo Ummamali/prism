@@ -10,3 +10,7 @@ experiment_1/results/per_example/*.json
 experiment_1/results/aggregate/*.csv
 experiment_1/results/aggregate/*.json
 !experiment_1/**/.gitkeep
+
+# Observations: keep the folder, ignore its contents
+experiment_1/observations/*
+!experiment_1/observations/.gitkeep

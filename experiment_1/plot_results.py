@@ -1,9 +1,11 @@
-"""Plotting for Experiment 1: loads both benchmarks' decomposition.py
-outputs (results/{model}/{dataset}/aggregate/) and produces four PNGs under
+"""Plotting for Experiment 1: loads each benchmark's decomposition.py
+outputs from the observations folder
+(observations/{MODEL_DIR}/{dataset}[_complete]/aggregate/) and produces four PNGs under
 experiment_1/plots/ comparing mathvista vs hallusionbench:
 
   1. per_step_trends.png   - mean M_s vs T_s over normalized step position,
-                             binned, +/- 1 SE band, one subplot per dataset.
+                             binned, +/- 1 SE band, all datasets on one axes (T_s in
+                             the dataset's color, M_s a darker shade of it).
   2. beta_ci.png           - beta_M / beta_T / delta_beta point + bootstrap
                              CI, grouped by dataset.
   3. beta_scatter.png      - per-example beta_M vs beta_T, colored by
@@ -16,7 +18,7 @@ baked into the plots. summary.json's own "interpretation" string is
 printed to the console instead, once per dataset.
 
 Usage:
-    python experiment_1/plot_results.py --model qwen3vl [--datasets mathvista hallusionbench]
+    python experiment_1/plot_results.py --model qwen3vl [--datasets mathvista hallusionbench] [--n-bins 20]
 """
 
 from __future__ import annotations
@@ -25,11 +27,18 @@ import argparse
 import json
 from pathlib import Path
 
+import matplotlib.colors as mcolors
 import matplotlib.pyplot as plt
+import matplotlib.ticker as mticker
 import numpy as np
 import pandas as pd
 
-from lib.config import DATASET_PRESETS, MODEL_PRESETS, load_config, resolve_path
+from lib.config import DATASET_PRESETS, MODEL_PRESETS, resolve_path
+
+# Folder name under experiment_1/observations/ for each model key.
+MODEL_DIRS = {
+    "qwen3vl": "QWEN_3_VL_2B",
+}
 
 # Categorical palette slots 1-5 (blue, orange, aqua, yellow, magenta) - the
 # default order's first five slots (see dataviz skill references/palette.md).
@@ -53,9 +62,16 @@ GRID_COLOR = "#e1e0d9"       # palette's "gridline (hairline)" role
 N_BINS = 10
 
 
-def load_dataset(dataset: str, model: str) -> dict:
-    cfg = load_config(dataset=dataset, model=model)
-    agg_dir = resolve_path(cfg["output"]["aggregate_dir"])
+def find_run_dir(obs_dir: Path, dataset: str) -> Path:
+    """Observation folders are named either "{dataset}" or "{dataset}_complete"."""
+    for name in (dataset, f"{dataset}_complete"):
+        if (obs_dir / name / "aggregate").is_dir():
+            return obs_dir / name
+    raise FileNotFoundError(f"no {dataset!r} or {dataset + '_complete'!r} folder with aggregate/ in {obs_dir}")
+
+
+def load_dataset(dataset: str, obs_dir: Path) -> dict:
+    agg_dir = find_run_dir(obs_dir, dataset) / "aggregate"
 
     step_df = pd.read_csv(agg_dir / "per_step_measures.csv")
     slopes_df = pd.read_csv(agg_dir / "per_example_slopes.csv")
@@ -83,40 +99,51 @@ def bin_stats(df: pd.DataFrame, value_col: str, n_bins: int = N_BINS) -> pd.Data
     return pd.DataFrame(rows)
 
 
-def plot_per_step_trends(data: dict, datasets: list[str], out_dir: Path) -> None:
-    fig, axes = plt.subplots(1, len(datasets), figsize=(6 * len(datasets), 5), sharey=True)
-    if len(datasets) == 1:
-        axes = [axes]
+def darken(color: str, amount: float = 0.45) -> str:
+    """Mix `color` toward black by `amount` (0 = unchanged, 1 = black)."""
+    r, g, b = mcolors.to_rgb(color)
+    return mcolors.to_hex((r * (1 - amount), g * (1 - amount), b * (1 - amount)))
 
-    for ax, dataset in zip(axes, datasets):
+
+def plot_per_step_trends(data: dict, datasets: list[str], out_dir: Path, n_bins: int = N_BINS) -> None:
+    """One axes for all benchmarks. Each benchmark's T_s is its palette color
+    (solid, squares); its M_s is a darker shade of the same color (dashed,
+    circles).
+    """
+    fig, ax = plt.subplots(figsize=(18, 11))
+    ax.axhline(0, color=ZERO_LINE_COLOR, linewidth=1, zorder=1)
+    ax.yaxis.set_major_locator(mticker.MultipleLocator(0.1))
+    ax.yaxis.set_major_formatter(mticker.FormatStrFormatter("%.1f"))
+
+    for dataset in datasets:
         step_df = data[dataset]["step_df"]
-        m_bins = bin_stats(step_df, "M_s")
-        t_bins = bin_stats(step_df, "T_s")
+        m_bins = bin_stats(step_df, "M_s", n_bins)
+        t_bins = bin_stats(step_df, "T_s", n_bins)
+        t_color = COLORS[dataset]
+        m_color = darken(t_color)
 
-        ax.axhline(0, color=ZERO_LINE_COLOR, linewidth=1, zorder=1)
-
-        ax.plot(m_bins["s_hat_center"], m_bins["mean"], color="#0b0b0b", linewidth=2,
-                marker="o", markersize=5, label=r"$M_s$ (marginal / controlled-direct)")
-        ax.fill_between(m_bins["s_hat_center"], m_bins["mean"] - m_bins["se"],
-                         m_bins["mean"] + m_bins["se"], color="#0b0b0b", alpha=0.15)
-
-        ax.plot(t_bins["s_hat_center"], t_bins["mean"], color=COLORS[dataset], linewidth=2,
-                marker="s", markersize=5, label=r"$T_s$ (total visual dependence)")
+        ax.plot(t_bins["s_hat_center"], t_bins["mean"], color=t_color, linewidth=2,
+                marker="s", markersize=5, label=rf"{dataset}: $T_s$ (total)")
         ax.fill_between(t_bins["s_hat_center"], t_bins["mean"] - t_bins["se"],
-                         t_bins["mean"] + t_bins["se"], color=COLORS[dataset], alpha=0.2)
+                         t_bins["mean"] + t_bins["se"], color=t_color, alpha=0.15)
 
-        ax.set_title(dataset)
-        ax.set_xlabel(r"step position (0 = start, 1 = end)")
-        ax.grid(True, color=GRID_COLOR, linewidth=0.8)
-        ax.set_axisbelow(True)
-        for spine in ("top", "right"):
-            ax.spines[spine].set_visible(False)
-        ax.legend(loc="best", frameon=False)
+        ax.plot(m_bins["s_hat_center"], m_bins["mean"], color=m_color, linewidth=2,
+                linestyle="--", marker="o", markersize=5,
+                label=rf"{dataset}: $M_s$ (marginal)")
+        ax.fill_between(m_bins["s_hat_center"], m_bins["mean"] - m_bins["se"],
+                         m_bins["mean"] + m_bins["se"], color=m_color, alpha=0.15)
 
-    axes[0].set_ylabel("mean nats/token (± 1 SE)")
-    fig.suptitle(r"$M_s$ vs $T_s$ over trajectory position, per benchmark")
+    ax.set_xlabel(r"step position (0 = start, 1 = end)")
+    ax.set_ylabel("mean nats/token (± 1 SE)")
+    ax.set_title(r"$M_s$ vs $T_s$ over trajectory position, all benchmarks")
+    ax.grid(True, color=GRID_COLOR, linewidth=0.8)
+    ax.set_axisbelow(True)
+    for spine in ("top", "right"):
+        ax.spines[spine].set_visible(False)
+    ax.legend(loc="upper center", bbox_to_anchor=(0.5, -0.06), frameon=False, ncol=2)
+
     fig.tight_layout()
-    fig.savefig(out_dir / "per_step_trends.png", dpi=150)
+    fig.savefig(out_dir / "per_step_trends.png", dpi=150, bbox_inches="tight")
     plt.close(fig)
 
 
@@ -195,12 +222,12 @@ def plot_beta_scatter(data: dict, datasets: list[str], out_dir: Path) -> None:
     plt.close(fig)
 
 
-def plot_redundancy_trend(data: dict, datasets: list[str], out_dir: Path) -> None:
+def plot_redundancy_trend(data: dict, datasets: list[str], out_dir: Path, n_bins: int = N_BINS) -> None:
     fig, ax = plt.subplots(figsize=(7, 5))
 
     for dataset in datasets:
         step_df = data[dataset]["step_df"]
-        r_bins = bin_stats(step_df, "R_s")
+        r_bins = bin_stats(step_df, "R_s", n_bins)
         ax.plot(r_bins["s_hat_center"], r_bins["mean"], color=COLORS[dataset], linewidth=2,
                  marker="o", markersize=5, label=dataset)
         ax.fill_between(r_bins["s_hat_center"], r_bins["mean"] - r_bins["se"],
@@ -214,10 +241,10 @@ def plot_redundancy_trend(data: dict, datasets: list[str], out_dir: Path) -> Non
     ax.set_axisbelow(True)
     for spine in ("top", "right"):
         ax.spines[spine].set_visible(False)
-    ax.legend(loc="best", frameon=False, title="dataset")
+    ax.legend(loc="upper center", bbox_to_anchor=(0.5, -0.12), frameon=False, ncol=len(datasets), title="dataset")
 
     fig.tight_layout()
-    fig.savefig(out_dir / "redundancy_trend.png", dpi=150)
+    fig.savefig(out_dir / "redundancy_trend.png", dpi=150, bbox_inches="tight")
     plt.close(fig)
 
 
@@ -232,26 +259,37 @@ def main() -> None:
         "--model", required=True, choices=sorted(MODEL_PRESETS),
         help="Which model's results to plot.",
     )
+    parser.add_argument(
+        "--obs-dir", default=None,
+        help="Folder holding the per-dataset run folders. "
+             "Default: experiment_1/observations/{MODEL_DIR for --model}.",
+    )
+    parser.add_argument(
+        "--n-bins", type=int, default=N_BINS,
+        help=f"Number of equal-width step-position bins for per_step_trends.png and "
+             f"redundancy_trend.png. Default: {N_BINS}.",
+    )
     parser.add_argument("--out-dir", default=None, help="Default: experiment_1/plots/{model}.")
     args = parser.parse_args()
+    if args.n_bins < 1:
+        parser.error("--n-bins must be >= 1")
 
     out_dir = resolve_path(args.out_dir or f"experiment_1/plots/{args.model}")
     out_dir.mkdir(parents=True, exist_ok=True)
 
+    obs_dir = resolve_path(args.obs_dir or f"experiment_1/observations/{MODEL_DIRS[args.model]}")
+
     data = {}
     for dataset in args.datasets:
         try:
-            data[dataset] = load_dataset(dataset, args.model)
+            data[dataset] = load_dataset(dataset, obs_dir)
         except FileNotFoundError as e:
-            raise SystemExit(
-                f"Missing decomposition output for {dataset!r}: {e}\n"
-                f"Run: python experiment_1/decomposition.py --dataset {dataset}"
-            )
+            raise SystemExit(f"Missing decomposition output for {dataset!r}: {e}")
 
-    plot_per_step_trends(data, args.datasets, out_dir)
+    plot_per_step_trends(data, args.datasets, out_dir, args.n_bins)
     plot_beta_ci(data, args.datasets, out_dir)
     plot_beta_scatter(data, args.datasets, out_dir)
-    plot_redundancy_trend(data, args.datasets, out_dir)
+    plot_redundancy_trend(data, args.datasets, out_dir, args.n_bins)
 
     print(f"Wrote 4 plots to {out_dir}\n")
     for dataset in args.datasets:
